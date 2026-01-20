@@ -92,7 +92,7 @@ pub const Shell = struct {
         const maybe_command_type = try shell.typeof(shell.command);
         if (maybe_command_type) |command_type| {
             switch (command_type) {
-                .Builtin => |builtin| try shell.run_builtin(builtin),
+                .Builtin => |builtin| try shell.run_builtin(gpa, builtin),
                 .Executable => |dir_path| try shell.run_executable(gpa, dir_path),
             }
         } else {
@@ -119,7 +119,7 @@ pub const Shell = struct {
         }
     }
 
-    fn run_builtin(shell: *Shell, builtin: BuiltinCommand) !void {
+    fn run_builtin(shell: *Shell, gpa: std.mem.Allocator, builtin: BuiltinCommand) !void {
         switch (builtin) {
             .Exit => shell.should_exit = true,
             .Echo => {
@@ -161,14 +161,14 @@ pub const Shell = struct {
             .ChangeDir => {
                 if (shell.argv.len == 1) {
                     const arg = shell.argv[0];
-                    const path = if (std.mem.eql(u8, arg, "~"))
-                        shell.env.get("HOME") orelse ""
-                    else
-                        arg;
+                    const home_dir = shell.env.get("HOME") orelse ".";
+                    const path = try std.mem.replaceOwned(u8, gpa, arg, "~", home_dir);
+                    defer gpa.free(path);
                     const dir = shell.cwd.openDir(path, .{}) catch {
                         try shell.stdout.print("cd: {s}: No such file or directory\n", .{path});
                         return;
                     };
+                    try dir.setAsCwd();
                     shell.cwd = dir;
                 }
             },

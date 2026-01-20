@@ -160,7 +160,11 @@ pub const Shell = struct {
             },
             .ChangeDir => {
                 if (shell.argv.len == 1) {
-                    const path = shell.argv[0];
+                    const arg = shell.argv[0];
+                    const path = if (std.mem.eql(u8, arg, "~"))
+                        shell.env.get("HOME") orelse ""
+                    else
+                        arg;
                     const dir = shell.cwd.openDir(path, .{}) catch {
                         try shell.stdout.print("cd: {s}: No such file or directory\n", .{path});
                         return;

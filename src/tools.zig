@@ -8,7 +8,7 @@ pub fn find_executable(env: std.process.EnvMap, name: []const u8) !?[]const u8 {
             defer dir.close();
             const stat = dir.statFile(name) catch continue;
             const permissions = stat.mode & 0o7777;
-            if (permissions & 0o444 > 0) {
+            if (permissions & 0o111 > 0) {
                 return dir_path;
             }
         }

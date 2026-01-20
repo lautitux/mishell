@@ -1,4 +1,5 @@
 const std = @import("std");
+const tools = @import("tools.zig");
 const builtin = @import("shell_builtin.zig");
 
 var stdout_writer = std.fs.File.stdout().writerStreaming(&.{});
@@ -30,7 +31,27 @@ pub fn main() !void {
                 }
             };
         } else {
-            try stdout.print("{s}: command not found\n", .{command});
+            const maybe_dir = try tools.find_executable(env, command);
+            if (maybe_dir) |dir| {
+                _ = dir;
+                var argv: std.ArrayList([]const u8) = .{};
+                try argv.append(allocator, command);
+                var iter = std.mem.splitAny(u8, arguments, " ");
+                while (iter.next()) |argument| {
+                    if (argument.len > 0) {
+                        try argv.append(allocator, argument);
+                    }
+                }
+                defer argv.deinit(allocator);
+                var executable: std.process.Child = .init(argv.items, allocator);
+                executable.stdin_behavior = .Inherit;
+                executable.stdout_behavior = .Inherit;
+                executable.stderr_behavior = .Inherit;
+                try executable.spawn();
+                _ = try executable.wait();
+            } else {
+                try stdout.print("{s}: command not found\n", .{command});
+            }
         }
     }
 }

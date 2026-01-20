@@ -161,7 +161,7 @@ pub const Shell = struct {
             .ChangeDir => {
                 if (shell.argv.len == 1) {
                     const path = shell.argv[0];
-                    const dir = std.fs.openDirAbsolute(path, .{}) catch {
+                    const dir = shell.cwd.openDir(path, .{}) catch {
                         try shell.stdout.print("cd: {s}: No such file or directory\n", .{path});
                         return;
                     };

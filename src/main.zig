@@ -11,13 +11,18 @@ pub fn main() !void {
     while (true) {
         try stdout.print("$ ", .{});
 
-        const command = try stdin.takeDelimiter('\n');
-        if (command) |cmd| {
-            if (std.mem.eql(u8, cmd, "exit")) {
-                break;
-            } else {
-                try stdout.print("{s}: command not found\n", .{cmd});
-            }
+        const input = (try stdin.takeDelimiter('\n')).?;
+        const separator = std.mem.indexOf(u8, input, " ");
+
+        const command = if (separator) |pos| input[0..pos] else input;
+        const arguments = if (separator) |pos| input[(pos + 1)..] else "";
+
+        if (std.mem.eql(u8, command, "exit")) {
+            break;
+        } else if (std.mem.eql(u8, command, "echo")) {
+            try stdout.print("{s}\n", .{arguments});
+        } else {
+            try stdout.print("{s}: command not found\n", .{command});
         }
     }
 }

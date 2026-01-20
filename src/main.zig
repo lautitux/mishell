@@ -21,6 +21,13 @@ pub fn main() !void {
             break;
         } else if (std.mem.eql(u8, command, "echo")) {
             try stdout.print("{s}\n", .{arguments});
+        } else if (std.mem.eql(u8, command, "type")) {
+            const search = std.mem.trim(u8, arguments, " \t\r");
+            if (std.mem.eql(u8, search, "exit") or std.mem.eql(u8, search, "echo") or std.mem.eql(u8, search, "type")) {
+                try stdout.print("{s} is a shell builtin\n", .{search});
+            } else {
+                try stdout.print("{s}: not found\n", .{search});
+            }
         } else {
             try stdout.print("{s}: command not found\n", .{command});
         }

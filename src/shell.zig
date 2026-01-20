@@ -2,24 +2,26 @@ const std = @import("std");
 
 pub const Shell = struct {
     should_exit: bool = false,
+    env: std.process.EnvMap,
     stdout: *std.Io.Writer,
     stdin: *std.Io.Reader,
-    command_pending: bool = false,
+    cwd: std.fs.Dir,
+    arena: std.heap.ArenaAllocator,
     command: []const u8 = "",
     argv: []const []const u8 = &.{},
-    env: std.process.EnvMap,
-    arena: std.heap.ArenaAllocator,
 
     const BuiltinCommand = enum {
         Exit,
         Echo,
         Type,
+        PrintWorkingDir,
     };
 
     const builtins: std.StaticStringMap(BuiltinCommand) = .initComptime(&.{
         .{ "exit", .Exit },
         .{ "echo", .Echo },
         .{ "type", .Type },
+        .{ "pwd", .PrintWorkingDir },
     });
 
     const CommandType = union(enum) {
@@ -38,6 +40,7 @@ pub const Shell = struct {
             .env = env,
             .stdout = stdout,
             .stdin = stdin,
+            .cwd = std.fs.cwd(),
         };
     }
 
@@ -147,6 +150,11 @@ pub const Shell = struct {
                         try shell.stdout.print("{s}: not found\n", .{command});
                     }
                 }
+            },
+            .PrintWorkingDir => {
+                var buffer: [1024]u8 = undefined;
+                const path = try shell.cwd.realpath(".", &buffer);
+                try shell.stdout.print("{s}\n", .{path});
             },
         }
     }

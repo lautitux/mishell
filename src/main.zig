@@ -9,6 +9,10 @@ pub fn main() !void {
     var stdin_reader = std.fs.File.stdin().readerStreaming(&stdin_buffer);
     const stdin = &stdin_reader.interface;
 
+    const allocator = std.heap.page_allocator;
+    var env = try std.process.getEnvMap(allocator);
+    defer env.deinit();
+
     while (true) {
         try stdout.print("$ ", .{});
 
@@ -19,9 +23,10 @@ pub fn main() !void {
         const arguments = if (separator) |pos| input[(pos + 1)..] else "";
 
         if (builtin.commands.get(command)) |kind| {
-            builtin.exec_command(kind, stdout, arguments) catch |err| {
+            builtin.exec_command(kind, env, stdout, arguments) catch |err| {
                 switch (err) {
                     error.ShouldExit => break,
+                    else => std.debug.print("error: {}\n", .{err}),
                 }
             };
         } else {

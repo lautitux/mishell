@@ -13,7 +13,11 @@ pub fn main() !void {
 
         const command = try stdin.takeDelimiter('\n');
         if (command) |cmd| {
-            try stdout.print("{s}: command not found\n", .{cmd});
+            if (std.mem.eql(u8, cmd, "exit")) {
+                break;
+            } else {
+                try stdout.print("{s}: command not found\n", .{cmd});
+            }
         }
     }
 }

@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("shell_builtin.zig");
 
 var stdout_writer = std.fs.File.stdout().writerStreaming(&.{});
 const stdout = &stdout_writer.interface;
@@ -17,17 +18,12 @@ pub fn main() !void {
         const command = if (separator) |pos| input[0..pos] else input;
         const arguments = if (separator) |pos| input[(pos + 1)..] else "";
 
-        if (std.mem.eql(u8, command, "exit")) {
-            break;
-        } else if (std.mem.eql(u8, command, "echo")) {
-            try stdout.print("{s}\n", .{arguments});
-        } else if (std.mem.eql(u8, command, "type")) {
-            const search = std.mem.trim(u8, arguments, " \t\r");
-            if (std.mem.eql(u8, search, "exit") or std.mem.eql(u8, search, "echo") or std.mem.eql(u8, search, "type")) {
-                try stdout.print("{s} is a shell builtin\n", .{search});
-            } else {
-                try stdout.print("{s}: not found\n", .{search});
-            }
+        if (builtin.commands.get(command)) |kind| {
+            builtin.exec_command(kind, stdout, arguments) catch |err| {
+                switch (err) {
+                    error.ShouldExit => break,
+                }
+            };
         } else {
             try stdout.print("{s}: command not found\n", .{command});
         }

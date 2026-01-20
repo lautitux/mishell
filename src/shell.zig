@@ -15,6 +15,7 @@ pub const Shell = struct {
         Echo,
         Type,
         PrintWorkingDir,
+        ChangeDir,
     };
 
     const builtins: std.StaticStringMap(BuiltinCommand) = .initComptime(&.{
@@ -22,6 +23,7 @@ pub const Shell = struct {
         .{ "echo", .Echo },
         .{ "type", .Type },
         .{ "pwd", .PrintWorkingDir },
+        .{ "cd", .ChangeDir },
     });
 
     const CommandType = union(enum) {
@@ -155,6 +157,16 @@ pub const Shell = struct {
                 var buffer: [1024]u8 = undefined;
                 const path = try shell.cwd.realpath(".", &buffer);
                 try shell.stdout.print("{s}\n", .{path});
+            },
+            .ChangeDir => {
+                if (shell.argv.len == 1) {
+                    const path = shell.argv[0];
+                    const dir = std.fs.openDirAbsolute(path, .{}) catch {
+                        try shell.stdout.print("cd: {s}: No such file or directory\n", .{path});
+                        return;
+                    };
+                    shell.cwd = dir;
+                }
             },
         }
     }

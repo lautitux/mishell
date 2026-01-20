@@ -96,12 +96,13 @@ pub const Shell = struct {
     }
 
     fn run_executable(shell: *Shell, gpa: std.mem.Allocator, dir_path: []const u8) !void {
-        const path = try std.fs.path.join(gpa, &.{ dir_path, shell.command });
-        defer gpa.free(path);
+        // const path = try std.fs.path.join(gpa, &.{ dir_path, shell.command });
+        // defer gpa.free(path);
+        _ = dir_path;
 
         var argv_list: std.ArrayList([]const u8) = .{};
         defer argv_list.deinit(gpa);
-        try argv_list.append(gpa, path);
+        try argv_list.append(gpa, shell.command);
         try argv_list.appendSlice(gpa, shell.argv);
 
         var child: std.process.Child = .init(argv_list.items, gpa);
@@ -131,7 +132,7 @@ pub const Shell = struct {
                     const maybe_command_type = try shell.typeof(command);
                     if (maybe_command_type) |command_type| {
                         switch (command_type) {
-                            .Builtin => |_| try shell.stdout.print("{s} is shell builtin\n", .{command}),
+                            .Builtin => |_| try shell.stdout.print("{s} is a shell builtin\n", .{command}),
                             .Executable => |dir_path| try shell.stdout.print(
                                 "{s} is {s}{c}{s}\n",
                                 .{

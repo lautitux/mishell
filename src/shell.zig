@@ -5,12 +5,27 @@ const Parser = @import("parser.zig").Parser;
 pub const Shell = struct {
     should_exit: bool = false,
     env: std.process.EnvMap,
-    stdout: *std.Io.Writer,
-    stdin: *std.Io.Reader,
+    pipe_to: Streams = .{},
     cwd: std.fs.Dir,
     arena: std.heap.ArenaAllocator,
     command: []const u8 = "",
     argv: []const []const u8 = &.{},
+
+    var default_stdout_writer = std.fs.File.stdout().writerStreaming(&.{});
+    const default_stdout = &default_stdout_writer.interface;
+
+    var default_stderr_writer = std.fs.File.stderr().writerStreaming(&.{});
+    const default_stderr = &default_stderr_writer.interface;
+
+    var default_stdin_buffer: [4096]u8 = undefined;
+    var default_stdin_reader = std.fs.File.stdin().readerStreaming(&default_stdin_buffer);
+    const default_stdin = &default_stdin_reader.interface;
+
+    pub const Streams = struct {
+        stdin: ?*std.Io.Reader = null,
+        stdout: ?*std.Io.Writer = null,
+        stderr: ?*std.Io.Writer = null,
+    };
 
     const BuiltinCommand = enum {
         Exit,
@@ -36,34 +51,30 @@ pub const Shell = struct {
     pub fn init(
         allocator: std.mem.Allocator,
         env: std.process.EnvMap,
-        stdout: *std.Io.Writer,
-        stdin: *std.Io.Reader,
     ) Shell {
         return .{
             .arena = .init(allocator),
             .env = env,
-            .stdout = stdout,
-            .stdin = stdin,
             .cwd = std.fs.cwd(),
         };
     }
 
-    pub fn deinit(shell: *Shell) void {
-        shell.arena.deinit();
+    pub fn deinit(self: *Shell) void {
+        self.arena.deinit();
     }
 
-    pub fn prompt(shell: *Shell, gpa: std.mem.Allocator) !void {
-        try shell.stdout.print("$ ", .{});
+    pub fn prompt(self: *Shell, gpa: std.mem.Allocator) !void {
+        try default_stdout.print("$ ", .{});
 
-        _ = shell.arena.reset(.{ .retain_with_limit = 4096 });
-        const allocator = shell.arena.allocator();
+        _ = self.arena.reset(.{ .retain_with_limit = 4096 });
+        const allocator = self.arena.allocator();
 
         var string_builder: std.ArrayList(u8) = .{};
         defer string_builder.deinit(gpa);
 
         var keep_reading = true;
         while (keep_reading) {
-            const char = try shell.stdin.takeByte();
+            const char = try default_stdin.takeByte();
             if (char == '\n') {
                 keep_reading = false;
             } else {
@@ -79,38 +90,57 @@ pub const Shell = struct {
         var parser: Parser = .init(parser_arena.allocator(), line);
         const tokens = try parser.parse();
         if (tokens.len > 0) {
-            shell.command = try allocator.dupe(u8, tokens[0]);
-            shell.argv = if (tokens.len > 1)
+            self.command = try allocator.dupe(u8, tokens[0]);
+            self.argv = if (tokens.len > 1)
                 try util.dupe2(allocator, u8, tokens[1..])
             else
                 &.{};
         }
     }
 
-    pub fn run(shell: *Shell, gpa: std.mem.Allocator) !void {
-        const maybe_command_type = try shell.typeof(shell.command);
+    pub fn run(self: *Shell, gpa: std.mem.Allocator) !void {
+        const maybe_command_type = try self.typeof(self.command);
         if (maybe_command_type) |command_type| {
             switch (command_type) {
-                .Builtin => |builtin| try shell.run_builtin(gpa, builtin),
-                .Executable => |dir_path| try shell.run_executable(gpa, dir_path),
+                .Builtin => |builtin| try self.run_builtin(gpa, builtin),
+                .Executable => |dir_path| try self.run_executable(gpa, dir_path),
             }
         } else {
-            try shell.stdout.print("{s}: command not found\n", .{shell.command});
+            try default_stderr.print("{s}: command not found\n", .{self.command});
         }
     }
 
-    fn run_executable(shell: *Shell, gpa: std.mem.Allocator, dir_path: []const u8) !void {
+    fn run_executable(self: *Shell, gpa: std.mem.Allocator, dir_path: []const u8) !void {
         // const path = try std.fs.path.join(gpa, &.{ dir_path, shell.command });
         // defer gpa.free(path);
         _ = dir_path;
 
         var argv_list: std.ArrayList([]const u8) = .{};
         defer argv_list.deinit(gpa);
-        try argv_list.append(gpa, shell.command);
-        try argv_list.appendSlice(gpa, shell.argv);
+        try argv_list.append(gpa, self.command);
+        try argv_list.appendSlice(gpa, self.argv);
 
         var child: std.process.Child = .init(argv_list.items, gpa);
+        child.stdout_behavior = if (self.pipe_to.stdout) |_| .Pipe else .Inherit;
+        child.stderr_behavior = if (self.pipe_to.stderr) |_| .Pipe else .Inherit;
         try child.spawn();
+        try child.waitForSpawn();
+        var stdout_thread: ?std.Thread = null;
+        var stderr_thread: ?std.Thread = null;
+        if (self.pipe_to.stdout) |pipe_stdout| {
+            var buffer: [1024]u8 = undefined;
+            var child_stdout_reader = child.stdout.?.readerStreaming(&buffer);
+            const child_stdout = &child_stdout_reader.interface;
+            stdout_thread = try std.Thread.spawn(.{}, util.pipe, .{ child_stdout, pipe_stdout });
+        }
+        if (self.pipe_to.stderr) |pipe_stderr| {
+            var buffer: [1024]u8 = undefined;
+            var child_stderr_reader = child.stderr.?.readerStreaming(&buffer);
+            const child_stderr = &child_stderr_reader.interface;
+            stderr_thread = try std.Thread.spawn(.{}, util.pipe, .{ child_stderr, pipe_stderr });
+        }
+        if (stdout_thread) |thread| thread.join();
+        if (stderr_thread) |thread| thread.join();
         const status = try child.wait();
         switch (status) {
             // TODO
@@ -118,26 +148,28 @@ pub const Shell = struct {
         }
     }
 
-    fn run_builtin(shell: *Shell, gpa: std.mem.Allocator, builtin: BuiltinCommand) !void {
+    fn run_builtin(self: *Shell, gpa: std.mem.Allocator, builtin: BuiltinCommand) !void {
+        const stdout = self.pipe_to.stdout orelse default_stdout;
+        const stderr = self.pipe_to.stderr orelse default_stderr;
         switch (builtin) {
-            .Exit => shell.should_exit = true,
+            .Exit => self.should_exit = true,
             .Echo => {
-                for (shell.argv, 0..) |arg, i| {
-                    try shell.stdout.writeAll(arg);
-                    if (i != shell.argv.len) {
-                        try shell.stdout.writeAll(" ");
+                for (self.argv, 0..) |arg, i| {
+                    try stdout.writeAll(arg);
+                    if (i != self.argv.len) {
+                        try stdout.writeAll(" ");
                     }
                 }
-                try shell.stdout.writeByte('\n');
-                try shell.stdout.flush();
+                try stdout.writeByte('\n');
+                try stdout.flush();
             },
             .Type => {
-                for (shell.argv) |command| {
-                    const maybe_command_type = try shell.typeof(command);
+                for (self.argv) |command| {
+                    const maybe_command_type = try self.typeof(command);
                     if (maybe_command_type) |command_type| {
                         switch (command_type) {
-                            .Builtin => |_| try shell.stdout.print("{s} is a shell builtin\n", .{command}),
-                            .Executable => |dir_path| try shell.stdout.print(
+                            .Builtin => |_| try stdout.print("{s} is a shell builtin\n", .{command}),
+                            .Executable => |dir_path| try stdout.print(
                                 "{s} is {s}{c}{s}\n",
                                 .{
                                     command,
@@ -148,37 +180,37 @@ pub const Shell = struct {
                             ),
                         }
                     } else {
-                        try shell.stdout.print("{s}: not found\n", .{command});
+                        try stderr.print("{s}: not found\n", .{command});
                     }
                 }
             },
             .PrintWorkingDir => {
                 var buffer: [1024]u8 = undefined;
-                const path = try shell.cwd.realpath(".", &buffer);
-                try shell.stdout.print("{s}\n", .{path});
+                const path = try self.cwd.realpath(".", &buffer);
+                try stdout.print("{s}\n", .{path});
             },
             .ChangeDir => {
-                if (shell.argv.len == 1) {
-                    const arg = shell.argv[0];
-                    const home_dir = shell.env.get("HOME") orelse ".";
+                if (self.argv.len == 1) {
+                    const arg = self.argv[0];
+                    const home_dir = self.env.get("HOME") orelse ".";
                     const path = try std.mem.replaceOwned(u8, gpa, arg, "~", home_dir);
                     defer gpa.free(path);
-                    const dir = shell.cwd.openDir(path, .{}) catch {
-                        try shell.stdout.print("cd: {s}: No such file or directory\n", .{path});
+                    const dir = self.cwd.openDir(path, .{}) catch {
+                        try stderr.print("cd: {s}: No such file or directory\n", .{path});
                         return;
                     };
                     try dir.setAsCwd();
-                    shell.cwd = dir;
+                    self.cwd = dir;
                 }
             },
         }
     }
 
-    fn typeof(shell: *const Shell, command: []const u8) !?CommandType {
+    fn typeof(self: *const Shell, command: []const u8) !?CommandType {
         if (builtins.get(command)) |builtin| {
             return .{ .Builtin = builtin };
         } else {
-            const maybe_dir = try shell.find_executable(command);
+            const maybe_dir = try self.find_executable(command);
             if (maybe_dir) |dir_path| {
                 return .{ .Executable = dir_path };
             }
@@ -186,8 +218,8 @@ pub const Shell = struct {
         return null;
     }
 
-    fn find_executable(shell: *const Shell, name: []const u8) !?[]const u8 {
-        if (shell.env.get("PATH")) |path| {
+    fn find_executable(self: *const Shell, name: []const u8) !?[]const u8 {
+        if (self.env.get("PATH")) |path| {
             var iter = std.mem.splitScalar(u8, path, ':');
             while (iter.next()) |dir_path| {
                 var dir = try std.fs.openDirAbsolute(dir_path, .{});

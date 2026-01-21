@@ -97,7 +97,10 @@ pub const Parser = struct {
                                 escape_within_str = true;
                                 continue;
                             }
-                            escape_within_str = false;
+                            if (escape_within_str and inner_char != '"' and inner_char != '\\') {
+                                try string_list.append(self.allocator, '\\');
+                                escape_within_str = false;
+                            }
                             try string_list.append(self.allocator, inner_char);
                         }
                     },

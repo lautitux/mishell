@@ -84,6 +84,12 @@ pub const Parser = struct {
                         try string_list.append(self.allocator, inner_char);
                     }
                 },
+                '"' => {
+                    while (self.advance()) |inner_char| {
+                        if (inner_char == '"') break;
+                        try string_list.append(self.allocator, inner_char);
+                    }
+                },
                 ' ', '\r', '\t', '\n' => break,
                 else => try string_list.append(self.allocator, char),
             }

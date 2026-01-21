@@ -65,52 +65,34 @@ pub const Parser = struct {
     }
 
     pub fn parseToken(self: *Parser) !?Token {
-        while (self.advance()) |char| {
+        while (self.peek()) |char| {
             switch (char) {
-                '\'' => return try self.parseSingleQuoteString(),
-                ' ', '\r', '\t', '\n' => {}, // Skip whitespaces
-                else => return try self.parseWord(),
+                ' ', '\r', '\t', '\n' => _ = self.advance(), // Skip whitespaces
+                else => return try self.parseString(),
             }
         }
         return null;
     }
 
-    pub fn parseSingleQuoteString(self: *Parser) !?Token {
-        var str_list: std.ArrayList(u8) = .{};
+    pub fn parseString(self: *Parser) !?Token {
+        var string_list: std.ArrayList(u8) = .{};
         while (self.advance()) |char| {
-            if (char == '\'') {
-                if (self.peek() orelse ' ' == '\'') {
-                    // Concatenate contigous strings
-                    _ = self.advance();
-                } else {
-                    break;
-                }
-            } else {
-                try str_list.append(self.allocator, char);
+            switch (char) {
+                '\'' => {
+                    while (self.advance()) |inner_char| {
+                        if (inner_char == '\'') break;
+                        try string_list.append(self.allocator, inner_char);
+                    }
+                },
+                ' ', '\r', '\t', '\n' => break,
+                else => try string_list.append(self.allocator, char),
             }
         }
-        if (str_list.items.len == 0) {
-            str_list.deinit(self.allocator);
+        if (string_list.items.len == 0) {
+            string_list.deinit(self.allocator);
             return null;
         } else {
-            return str_list.items;
+            return string_list.items;
         }
-    }
-
-    pub fn parseWord(self: *Parser) !Token {
-        var word_list: std.ArrayList(u8) = .{};
-        try word_list.append(self.allocator, self.previous().?);
-        while (self.peek()) |char| {
-            if (char == '\'' and self.peek2() orelse ' ' == '\'') {
-                // Ignore empty string
-                _ = self.advance();
-                _ = self.advance();
-            } else if (char == '\'' or std.ascii.isWhitespace(char)) {
-                break;
-            } else {
-                try word_list.append(self.allocator, self.advance().?);
-            }
-        }
-        return word_list.items;
     }
 };

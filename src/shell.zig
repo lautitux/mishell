@@ -1,4 +1,6 @@
 const std = @import("std");
+const util = @import("util.zig");
+const Parser = @import("parser.zig").Parser;
 
 pub const Shell = struct {
     should_exit: bool = false,
@@ -70,22 +72,19 @@ pub const Shell = struct {
         }
 
         const line = string_builder.items;
-        const delimiter = std.mem.indexOfAny(u8, line, " \t\r");
-        const command = if (delimiter) |pos| line[0..pos] else line;
-        const argv_str = if (delimiter) |pos| line[(pos + 1)..] else "";
 
-        var iter = std.mem.splitAny(u8, argv_str, " \t\r");
-        var argv: std.ArrayList([]const u8) = .{};
-        defer argv.deinit(gpa);
+        var parser_arena: std.heap.ArenaAllocator = .init(gpa);
+        defer parser_arena.deinit();
 
-        while (iter.next()) |arg| {
-            if (arg.len != 0) {
-                try argv.append(gpa, try allocator.dupe(u8, arg));
-            }
+        var parser: Parser = .init(parser_arena.allocator(), line);
+        const tokens = try parser.parse();
+        if (tokens.len > 0) {
+            shell.command = try allocator.dupe(u8, tokens[0]);
+            shell.argv = if (tokens.len > 1)
+                try util.dupe2(allocator, u8, tokens[1..])
+            else
+                &.{};
         }
-
-        shell.command = try allocator.dupe(u8, command);
-        shell.argv = try allocator.dupe([]const u8, argv.items);
     }
 
     pub fn run(shell: *Shell, gpa: std.mem.Allocator) !void {

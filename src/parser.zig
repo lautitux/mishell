@@ -40,13 +40,6 @@ pub const Parser = struct {
             self.source[self.current];
     }
 
-    fn peek2(self: *const Parser) ?u8 {
-        return if (self.current + 1 >= self.source.len)
-            null
-        else
-            self.source[self.current + 1];
-    }
-
     fn advance(self: *Parser) ?u8 {
         if (!self.isAtEnd()) {
             self.current += 1;
@@ -99,8 +92,8 @@ pub const Parser = struct {
                             }
                             if (escape_within_str and inner_char != '"' and inner_char != '\\') {
                                 try string_list.append(self.allocator, '\\');
-                                escape_within_str = false;
                             }
+                            escape_within_str = false;
                             try string_list.append(self.allocator, inner_char);
                         }
                     },

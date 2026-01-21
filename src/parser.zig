@@ -90,8 +90,14 @@ pub const Parser = struct {
                         }
                     },
                     '"' => {
+                        var escape_within_str = false;
                         while (self.advance()) |inner_char| {
-                            if (inner_char == '"') break;
+                            if (inner_char == '"' and !escape_within_str) break;
+                            if (inner_char == '\\' and !escape_within_str) {
+                                escape_within_str = true;
+                                continue;
+                            }
+                            escape_within_str = false;
                             try string_list.append(self.allocator, inner_char);
                         }
                     },

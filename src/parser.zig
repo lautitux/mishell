@@ -26,13 +26,6 @@ pub const Parser = struct {
         return self.current >= self.source.len;
     }
 
-    fn previous(self: *const Parser) ?u8 {
-        return if (self.current > 0)
-            self.source[self.current - 1]
-        else
-            null;
-    }
-
     fn peek(self: *const Parser) ?u8 {
         return if (self.isAtEnd())
             null
@@ -68,46 +61,57 @@ pub const Parser = struct {
     }
 
     pub fn parseString(self: *Parser) !?Token {
-        var string_list: std.ArrayList(u8) = .{};
+        var char_list: std.ArrayList(u8) = .{};
         var escape_next = false;
         while (self.advance()) |char| {
             if (escape_next) {
-                try string_list.append(self.allocator, char);
+                try char_list.append(self.allocator, char);
                 escape_next = false;
             } else {
                 switch (char) {
-                    '\'' => {
-                        while (self.advance()) |inner_char| {
-                            if (inner_char == '\'') break;
-                            try string_list.append(self.allocator, inner_char);
-                        }
-                    },
-                    '"' => {
-                        var escape_within_str = false;
-                        while (self.advance()) |inner_char| {
-                            if (inner_char == '"' and !escape_within_str) break;
-                            if (inner_char == '\\' and !escape_within_str) {
-                                escape_within_str = true;
-                                continue;
-                            }
-                            if (escape_within_str and inner_char != '"' and inner_char != '\\') {
-                                try string_list.append(self.allocator, '\\');
-                            }
-                            escape_within_str = false;
-                            try string_list.append(self.allocator, inner_char);
-                        }
-                    },
+                    '\'' => try self.parseSingleQuotedString(&char_list),
+                    '"' => try self.parseDoubleQuotedString(&char_list),
                     '\\' => escape_next = true,
                     ' ', '\r', '\t', '\n' => break,
-                    else => try string_list.append(self.allocator, char),
+                    else => try char_list.append(self.allocator, char),
                 }
             }
         }
-        if (string_list.items.len == 0) {
-            string_list.deinit(self.allocator);
+        if (char_list.items.len == 0) {
+            char_list.deinit(self.allocator);
             return null;
         } else {
-            return string_list.items;
+            return char_list.items;
+        }
+    }
+
+    fn parseSingleQuotedString(self: *Parser, char_list: *std.ArrayList(u8)) !void {
+        while (self.advance()) |char| {
+            if (char == '\'') break;
+            try char_list.append(self.allocator, char);
+        }
+    }
+
+    fn parseDoubleQuotedString(self: *Parser, char_list: *std.ArrayList(u8)) !void {
+        var escape = false;
+        while (self.advance()) |char| {
+            if (escape) {
+                switch (char) {
+                    '"', '\\' => {},
+                    else => try char_list.append(self.allocator, '\\'),
+                }
+            } else {
+                switch (char) {
+                    '"' => break,
+                    '\\' => {
+                        escape = true;
+                        continue;
+                    },
+                    else => {},
+                }
+            }
+            escape = false;
+            try char_list.append(self.allocator, char);
         }
     }
 };

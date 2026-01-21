@@ -40,6 +40,13 @@ pub const Parser = struct {
             self.source[self.current];
     }
 
+    fn peek2(self: *const Parser) ?u8 {
+        return if (self.current + 1 >= self.source.len)
+            null
+        else
+            self.source[self.current + 1];
+    }
+
     fn advance(self: *Parser) ?u8 {
         if (!self.isAtEnd()) {
             self.current += 1;
@@ -93,8 +100,17 @@ pub const Parser = struct {
     pub fn parseWord(self: *Parser) !Token {
         var word_list: std.ArrayList(u8) = .{};
         try word_list.append(self.allocator, self.previous().?);
-        while (!std.ascii.isWhitespace(self.peek() orelse ' '))
-            try word_list.append(self.allocator, self.advance().?);
+        while (self.peek()) |char| {
+            if (char == '\'' and self.peek2() orelse ' ' == '\'') {
+                // Ignore empty string
+                _ = self.advance();
+                _ = self.advance();
+            } else if (char == '\'' or std.ascii.isWhitespace(char)) {
+                break;
+            } else {
+                try word_list.append(self.allocator, self.advance().?);
+            }
+        }
         return word_list.items;
     }
 };

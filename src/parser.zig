@@ -76,22 +76,29 @@ pub const Parser = struct {
 
     pub fn parseString(self: *Parser) !?Token {
         var string_list: std.ArrayList(u8) = .{};
+        var escape_next = false;
         while (self.advance()) |char| {
-            switch (char) {
-                '\'' => {
-                    while (self.advance()) |inner_char| {
-                        if (inner_char == '\'') break;
-                        try string_list.append(self.allocator, inner_char);
-                    }
-                },
-                '"' => {
-                    while (self.advance()) |inner_char| {
-                        if (inner_char == '"') break;
-                        try string_list.append(self.allocator, inner_char);
-                    }
-                },
-                ' ', '\r', '\t', '\n' => break,
-                else => try string_list.append(self.allocator, char),
+            if (escape_next) {
+                try string_list.append(self.allocator, char);
+                escape_next = false;
+            } else {
+                switch (char) {
+                    '\'' => {
+                        while (self.advance()) |inner_char| {
+                            if (inner_char == '\'') break;
+                            try string_list.append(self.allocator, inner_char);
+                        }
+                    },
+                    '"' => {
+                        while (self.advance()) |inner_char| {
+                            if (inner_char == '"') break;
+                            try string_list.append(self.allocator, inner_char);
+                        }
+                    },
+                    '\\' => escape_next = true,
+                    ' ', '\r', '\t', '\n' => break,
+                    else => try string_list.append(self.allocator, char),
+                }
             }
         }
         if (string_list.items.len == 0) {

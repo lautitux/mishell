@@ -17,5 +17,6 @@ pub fn main() !void {
 
     while (!shell.should_exit) {
         try shell.prompt(allocator);
+        try shell.run(allocator);
     }
 }

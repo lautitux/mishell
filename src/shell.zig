@@ -99,7 +99,36 @@ pub const Shell = struct {
         }
     }
 
-    pub fn runCommand(
+    pub fn run(self: *Shell, gpa: std.mem.Allocator) !void {
+        if (self.ast) |ast| {
+            switch (ast.*) {
+                .Command => |cmd| {
+                    self.pipe_to = .{};
+                    try self.runCommand(gpa, cmd.name, cmd.arguments);
+                },
+                .Binary => |binary| {
+                    switch (binary.op) {
+                        .RedirectStdout, .RedirectStderr => {
+                            std.debug.assert(binary.lhs.* == .Command);
+                            std.debug.assert(binary.rhs.* == .Literal);
+                            var file = try self.cwd.createFile(binary.rhs.Literal, .{});
+                            defer file.close();
+                            var file_writer = file.writerStreaming(&.{});
+                            if (binary.op == .RedirectStdout) {
+                                self.pipe_to = .{ .stdout = &file_writer.interface };
+                            } else if (binary.op == .RedirectStderr) {
+                                self.pipe_to = .{ .stderr = &file_writer.interface };
+                            }
+                            try self.runCommand(gpa, binary.lhs.Command.name, binary.lhs.Command.arguments);
+                        },
+                    }
+                },
+                .Literal => return error.UnexpectedLiteral,
+            }
+        }
+    }
+
+    fn runCommand(
         self: *Shell,
         gpa: std.mem.Allocator,
         command: []const u8,

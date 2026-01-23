@@ -4,7 +4,8 @@ const Token = scanner.Token;
 const TokenKind = scanner.TokenKind;
 
 pub const Operator = enum {
-    Redirect,
+    RedirectStdout,
+    RedirectStderr,
 };
 
 pub const Ast = union(enum) {
@@ -64,13 +65,13 @@ pub const Parser = struct {
     pub fn redirect(self: *Parser, allocator: std.mem.Allocator) !*Ast {
         const lhs = try self.command(allocator);
         if (self.check(.Redirect)) {
-            _ = self.advance();
+            const token = self.advance().?;
             const rhs = self.literal(allocator) catch return error.ExpectedLiteral;
             const expr = try allocator.create(Ast);
             expr.* = .{
                 .Binary = .{
                     .lhs = lhs,
-                    .op = .Redirect,
+                    .op = if (token.Redirect == 1) .RedirectStdout else .RedirectStderr,
                     .rhs = rhs,
                 },
             };

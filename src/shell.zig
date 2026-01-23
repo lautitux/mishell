@@ -1,6 +1,6 @@
 const std = @import("std");
 const util = @import("util.zig");
-const Parser = @import("parser.zig").Parser;
+const Scanner = @import("scanner.zig").Scanner;
 
 pub const Shell = struct {
     should_exit: bool = false,
@@ -68,7 +68,7 @@ pub const Shell = struct {
 
         _ = self.arena.reset(.{ .retain_with_limit = 4096 });
         const allocator = self.arena.allocator();
-
+        _ = allocator;
         var string_builder: std.ArrayList(u8) = .{};
         defer string_builder.deinit(gpa);
 
@@ -87,14 +87,15 @@ pub const Shell = struct {
         var parser_arena: std.heap.ArenaAllocator = .init(gpa);
         defer parser_arena.deinit();
 
-        var parser: Parser = .init(parser_arena.allocator(), line);
-        const tokens = try parser.parse();
+        var parser: Scanner = .init(parser_arena.allocator(), line);
+        const tokens = try parser.scan();
+        std.debug.print("Got: {any}\n", .{tokens});
         if (tokens.len > 0) {
-            self.command = try allocator.dupe(u8, tokens[0]);
-            self.argv = if (tokens.len > 1)
-                try util.dupe2(allocator, u8, tokens[1..])
-            else
-                &.{};
+            // self.command = try allocator.dupe(u8, tokens[0]);
+            // self.argv = if (tokens.len > 1)
+            //     try util.dupe2(allocator, u8, tokens[1..])
+            // else
+            //     &.{};
         }
     }
 

@@ -3,11 +3,13 @@ const ascii = std.ascii;
 
 pub const TokenKind = enum {
     Redirect,
+    RedirectAppend,
     String,
 };
 
 pub const Token = union(TokenKind) {
     Redirect: u8,
+    RedirectAppend: u8,
     String: []u8,
 };
 
@@ -67,16 +69,19 @@ pub const Scanner = struct {
         while (self.peek()) |char| {
             switch (char) {
                 ' ', '\r', '\t', '\n' => _ = self.advance(), // Skip whitespaces
-                '>' => {
-                    _ = self.advance();
-                    return .{ .Redirect = 1 };
-                },
                 else => {
-                    const isRedirect = ascii.isDigit(char) and (self.peekN(1) orelse 0 == '>');
+                    const isDigit = ascii.isDigit(char);
+                    const isRedirect = char == '>' or (isDigit and self.peekN(1) == '>');
                     if (isRedirect) {
-                        const number = char - '0';
+                        const number = if (isDigit) char - '0' else 1;
+                        if (isDigit) {
+                            _ = self.advance();
+                        }
                         _ = self.advance();
-                        _ = self.advance();
+                        if (self.peek() == '>') {
+                            _ = self.advance();
+                            return .{ .RedirectAppend = number };
+                        }
                         return .{ .Redirect = number };
                     } else {
                         return try self.scanString();

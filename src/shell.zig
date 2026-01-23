@@ -94,6 +94,7 @@ pub const Shell = struct {
         if (tokens.len > 0) {
             var parser: Parser = .{ .tokens = tokens };
             self.ast = try parser.parse(&self.arena);
+            // std.debug.print("[AST {any}]\n", .{self.ast});
         } else {
             self.ast = null;
         }
@@ -108,15 +109,26 @@ pub const Shell = struct {
                 },
                 .Binary => |binary| {
                     switch (binary.op) {
-                        .RedirectStdout, .RedirectStderr => {
+                        .RedirectStdout,
+                        .RedirectStderr,
+                        .RedirectAppendStdout,
+                        .RedirectAppendStderr,
+                        => {
                             std.debug.assert(binary.lhs.* == .Command);
                             std.debug.assert(binary.rhs.* == .Literal);
-                            var file = try self.cwd.createFile(binary.rhs.Literal, .{});
+                            const opt: std.fs.File.CreateFlags =
+                                .{
+                                    .truncate = binary.op == .RedirectStdout or binary.op == .RedirectStderr,
+                                };
+                            var file = try self.cwd.createFile(binary.rhs.Literal, opt);
                             defer file.close();
+                            if (!opt.truncate) {
+                                try file.seekFromEnd(0);
+                            }
                             var file_writer = file.writerStreaming(&.{});
-                            if (binary.op == .RedirectStdout) {
+                            if (binary.op == .RedirectStdout or binary.op == .RedirectAppendStdout) {
                                 self.pipe_to = .{ .stdout = &file_writer.interface };
-                            } else if (binary.op == .RedirectStderr) {
+                            } else if (binary.op == .RedirectStderr or binary.op == .RedirectAppendStderr) {
                                 self.pipe_to = .{ .stderr = &file_writer.interface };
                             }
                             try self.runCommand(gpa, binary.lhs.Command.name, binary.lhs.Command.arguments);

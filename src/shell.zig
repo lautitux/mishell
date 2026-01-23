@@ -1,6 +1,9 @@
 const std = @import("std");
 const util = @import("util.zig");
 const Scanner = @import("scanner.zig").Scanner;
+const parser_mod = @import("parser.zig");
+const Parser = parser_mod.Parser;
+const Ast = parser_mod.Ast;
 
 pub const Shell = struct {
     should_exit: bool = false,
@@ -8,8 +11,7 @@ pub const Shell = struct {
     pipe_to: Streams = .{},
     cwd: std.fs.Dir,
     arena: std.heap.ArenaAllocator,
-    command: []const u8 = "",
-    argv: []const []const u8 = &.{},
+    ast: ?*Ast = null,
 
     var default_stdout_writer = std.fs.File.stdout().writerStreaming(&.{});
     const default_stdout = &default_stdout_writer.interface;
@@ -84,42 +86,51 @@ pub const Shell = struct {
 
         const line = string_builder.items;
 
-        var parser_arena: std.heap.ArenaAllocator = .init(gpa);
-        defer parser_arena.deinit();
+        var scanner_arena: std.heap.ArenaAllocator = .init(gpa);
+        defer scanner_arena.deinit();
 
-        var parser: Scanner = .init(parser_arena.allocator(), line);
-        const tokens = try parser.scan();
-        std.debug.print("Got: {any}\n", .{tokens});
+        var scanner: Scanner = .init(scanner_arena.allocator(), line);
+        const tokens = try scanner.scan();
         if (tokens.len > 0) {
-            // self.command = try allocator.dupe(u8, tokens[0]);
-            // self.argv = if (tokens.len > 1)
-            //     try util.dupe2(allocator, u8, tokens[1..])
-            // else
-            //     &.{};
+            var parser: Parser = .{ .tokens = tokens };
+            self.ast = try parser.parse(&self.arena);
+        } else {
+            self.ast = null;
         }
     }
 
-    pub fn run(self: *Shell, gpa: std.mem.Allocator) !void {
-        const maybe_command_type = try self.typeof(self.command);
+    pub fn runCommand(
+        self: *Shell,
+        gpa: std.mem.Allocator,
+        command: []const u8,
+        arguments: []const []const u8,
+    ) !void {
+        const maybe_command_type = try self.typeof(command);
         if (maybe_command_type) |command_type| {
             switch (command_type) {
-                .Builtin => |builtin| try self.run_builtin(gpa, builtin),
-                .Executable => |dir_path| try self.run_executable(gpa, dir_path),
+                .Builtin => |builtin| try self.runBuiltin(gpa, builtin, arguments),
+                .Executable => |dir_path| try self.runExe(gpa, dir_path, command, arguments),
             }
         } else {
-            try default_stderr.print("{s}: command not found\n", .{self.command});
+            try default_stderr.print("{s}: command not found\n", .{command});
         }
     }
 
-    fn run_executable(self: *Shell, gpa: std.mem.Allocator, dir_path: []const u8) !void {
+    fn runExe(
+        self: *Shell,
+        gpa: std.mem.Allocator,
+        dir_path: []const u8,
+        command: []const u8,
+        arguments: []const []const u8,
+    ) !void {
         // const path = try std.fs.path.join(gpa, &.{ dir_path, shell.command });
         // defer gpa.free(path);
         _ = dir_path;
 
         var argv_list: std.ArrayList([]const u8) = .{};
         defer argv_list.deinit(gpa);
-        try argv_list.append(gpa, self.command);
-        try argv_list.appendSlice(gpa, self.argv);
+        try argv_list.append(gpa, command);
+        try argv_list.appendSlice(gpa, arguments);
 
         var child: std.process.Child = .init(argv_list.items, gpa);
         child.stdout_behavior = if (self.pipe_to.stdout) |_| .Pipe else .Inherit;
@@ -149,15 +160,20 @@ pub const Shell = struct {
         }
     }
 
-    fn run_builtin(self: *Shell, gpa: std.mem.Allocator, builtin: BuiltinCommand) !void {
+    fn runBuiltin(
+        self: *Shell,
+        gpa: std.mem.Allocator,
+        builtin: BuiltinCommand,
+        arguments: []const []const u8,
+    ) !void {
         const stdout = self.pipe_to.stdout orelse default_stdout;
         const stderr = self.pipe_to.stderr orelse default_stderr;
         switch (builtin) {
             .Exit => self.should_exit = true,
             .Echo => {
-                for (self.argv, 0..) |arg, i| {
+                for (arguments, 0..) |arg, i| {
                     try stdout.writeAll(arg);
-                    if (i != self.argv.len) {
+                    if (i != arguments.len) {
                         try stdout.writeAll(" ");
                     }
                 }
@@ -165,7 +181,7 @@ pub const Shell = struct {
                 try stdout.flush();
             },
             .Type => {
-                for (self.argv) |command| {
+                for (arguments) |command| {
                     const maybe_command_type = try self.typeof(command);
                     if (maybe_command_type) |command_type| {
                         switch (command_type) {
@@ -191,8 +207,8 @@ pub const Shell = struct {
                 try stdout.print("{s}\n", .{path});
             },
             .ChangeDir => {
-                if (self.argv.len == 1) {
-                    const arg = self.argv[0];
+                if (arguments.len == 1) {
+                    const arg = arguments[0];
                     const home_dir = self.env.get("HOME") orelse ".";
                     const path = try std.mem.replaceOwned(u8, gpa, arg, "~", home_dir);
                     defer gpa.free(path);

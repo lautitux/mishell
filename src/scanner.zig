@@ -1,7 +1,12 @@
 const std = @import("std");
 const ascii = std.ascii;
 
-pub const Token = union(enum) {
+pub const TokenKind = enum {
+    Redirect,
+    String,
+};
+
+pub const Token = union(TokenKind) {
     Redirect: u8,
     String: []u8,
 };

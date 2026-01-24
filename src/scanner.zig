@@ -3,13 +3,14 @@ const ascii = std.ascii;
 
 pub const TokenKind = enum {
     Redirect,
-    RedirectAppend,
     String,
 };
 
 pub const Token = union(TokenKind) {
-    Redirect: u8,
-    RedirectAppend: u8,
+    Redirect: struct {
+        file_descriptor: u8,
+        append: bool,
+    },
     String: []u8,
 };
 
@@ -74,15 +75,22 @@ pub const Scanner = struct {
                     const isRedirect = char == '>' or (isDigit and self.peekN(1) == '>');
                     if (isRedirect) {
                         const number = if (isDigit) char - '0' else 1;
-                        if (isDigit) {
-                            _ = self.advance();
-                        }
+                        if (isDigit) _ = self.advance();
+
                         _ = self.advance();
-                        if (self.peek() == '>') {
-                            _ = self.advance();
-                            return .{ .RedirectAppend = number };
-                        }
-                        return .{ .Redirect = number };
+
+                        const append = self.peek() == '>';
+                        if (append) _ = self.advance();
+
+                        return if (number < 0 or number > 2)
+                            error.UnsupportedFileDescriptor
+                        else
+                            .{
+                                .Redirect = .{
+                                    .file_descriptor = number,
+                                    .append = append,
+                                },
+                            };
                     } else {
                         return try self.scanString();
                     }

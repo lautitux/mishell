@@ -3,7 +3,7 @@ const util = @import("util.zig");
 const Scanner = @import("scanner.zig").Scanner;
 const parser_mod = @import("parser.zig");
 const Parser = parser_mod.Parser;
-const Ast = parser_mod.Ast;
+const Expr = parser_mod.Expr;
 
 pub const Shell = struct {
     should_exit: bool = false,
@@ -11,7 +11,7 @@ pub const Shell = struct {
     pipe_to: Streams = .{},
     cwd: std.fs.Dir,
     arena: std.heap.ArenaAllocator,
-    ast: ?*Ast = null,
+    expr: ?*Expr = null,
 
     var default_stdout_writer = std.fs.File.stdout().writerStreaming(&.{});
     const default_stdout = &default_stdout_writer.interface;
@@ -93,47 +93,42 @@ pub const Shell = struct {
         const tokens = try scanner.scan();
         if (tokens.len > 0) {
             var parser: Parser = .{ .tokens = tokens };
-            self.ast = try parser.parse(&self.arena);
-            // std.debug.print("[AST {any}]\n", .{self.ast});
+            self.expr = try parser.parse(&self.arena);
         } else {
-            self.ast = null;
+            self.expr = null;
         }
     }
 
     pub fn run(self: *Shell, gpa: std.mem.Allocator) !void {
-        if (self.ast) |ast| {
+        self.pipe_to = .{};
+        if (self.expr) |ast| {
             switch (ast.*) {
                 .Command => |cmd| {
-                    self.pipe_to = .{};
                     try self.runCommand(gpa, cmd.name, cmd.arguments);
                 },
-                .Binary => |binary| {
-                    switch (binary.op) {
-                        .RedirectStdout,
-                        .RedirectStderr,
-                        .RedirectAppendStdout,
-                        .RedirectAppendStderr,
-                        => {
-                            std.debug.assert(binary.lhs.* == .Command);
-                            std.debug.assert(binary.rhs.* == .Literal);
-                            const opt: std.fs.File.CreateFlags =
-                                .{
-                                    .truncate = binary.op == .RedirectStdout or binary.op == .RedirectStderr,
-                                };
-                            var file = try self.cwd.createFile(binary.rhs.Literal, opt);
-                            defer file.close();
-                            if (!opt.truncate) {
-                                try file.seekFromEnd(0);
-                            }
-                            var file_writer = file.writerStreaming(&.{});
-                            if (binary.op == .RedirectStdout or binary.op == .RedirectAppendStdout) {
-                                self.pipe_to = .{ .stdout = &file_writer.interface };
-                            } else if (binary.op == .RedirectStderr or binary.op == .RedirectAppendStderr) {
-                                self.pipe_to = .{ .stderr = &file_writer.interface };
-                            }
-                            try self.runCommand(gpa, binary.lhs.Command.name, binary.lhs.Command.arguments);
-                        },
+                .Redirect => |redirect| {
+                    std.debug.assert(redirect.command.* == .Command);
+                    var file = try self.cwd.createFile(
+                        redirect.output_file,
+                        .{ .truncate = !redirect.append },
+                    );
+                    defer file.close();
+                    if (redirect.append) {
+                        try file.seekFromEnd(0);
                     }
+                    var file_writer = file.writerStreaming(&.{});
+                    if (redirect.file_descriptor == 1) {
+                        self.pipe_to = .{ .stdout = &file_writer.interface };
+                    } else if (redirect.file_descriptor == 2) {
+                        self.pipe_to = .{ .stderr = &file_writer.interface };
+                    } else {
+                        return error.UnsupportedFileDescriptor;
+                    }
+                    try self.runCommand(
+                        gpa,
+                        redirect.command.Command.name,
+                        redirect.command.Command.arguments,
+                    );
                 },
                 .Literal => return error.UnexpectedLiteral,
             }

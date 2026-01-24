@@ -3,15 +3,16 @@ const scanner = @import("scanner.zig");
 const Token = scanner.Token;
 const TokenKind = scanner.TokenKind;
 
-pub const Operator = enum {
-    RedirectStdout,
-    RedirectStderr,
-    RedirectAppendStdout,
-    RedirectAppendStderr,
-};
+pub const Operator = enum {};
 
-pub const Ast = union(enum) {
-    Binary: struct { lhs: *Ast, op: Operator, rhs: *Ast },
+pub const Expr = union(enum) {
+    // Binary: struct { lhs: *Expr, op: Operator, rhs: *Expr },
+    Redirect: struct {
+        command: *Expr,
+        file_descriptor: u8,
+        output_file: []const u8,
+        append: bool,
+    },
     Command: struct {
         name: []const u8,
         arguments: []const []const u8,
@@ -56,7 +57,7 @@ pub const Parser = struct {
         return null;
     }
 
-    pub fn parse(self: *Parser, arena: *std.heap.ArenaAllocator) !?*Ast {
+    pub fn parse(self: *Parser, arena: *std.heap.ArenaAllocator) !?*Expr {
         if (!self.isAtEnd()) {
             const allocator = arena.allocator();
             return try self.redirect(allocator);
@@ -64,28 +65,20 @@ pub const Parser = struct {
         return null;
     }
 
-    pub fn redirect(self: *Parser, allocator: std.mem.Allocator) !*Ast {
+    fn redirect(self: *Parser, allocator: std.mem.Allocator) !*Expr {
         const lhs = try self.command(allocator);
-        if (self.check(.Redirect) or self.check(.RedirectAppend)) {
+        if (self.check(.Redirect)) {
             const token = self.advance().?;
-            const rhs = self.literal(allocator) catch return error.ExpectedLiteral;
-            const op: Operator =
-                if (token == .Redirect and token.Redirect == 1)
-                    .RedirectStdout
-                else if (token == .Redirect and token.Redirect == 2)
-                    .RedirectStderr
-                else if (token == .RedirectAppend and token.RedirectAppend == 1)
-                    .RedirectAppendStdout
-                else if (token == .RedirectAppend and token.RedirectAppend == 2)
-                    .RedirectAppendStderr
-                else
-                    return error.InvalidRedirectNumber;
-            const expr = try allocator.create(Ast);
+            const rhs_token =
+                self.consume(.String) catch return error.ExpectedString;
+
+            const expr = try allocator.create(Expr);
             expr.* = .{
-                .Binary = .{
-                    .lhs = lhs,
-                    .op = op,
-                    .rhs = rhs,
+                .Redirect = .{
+                    .command = lhs,
+                    .file_descriptor = token.Redirect.file_descriptor,
+                    .output_file = try allocator.dupe(u8, rhs_token.String),
+                    .append = token.Redirect.append,
                 },
             };
             return expr;
@@ -93,16 +86,19 @@ pub const Parser = struct {
         return lhs;
     }
 
-    pub fn command(self: *Parser, allocator: std.mem.Allocator) !*Ast {
-        const name_token = self.consume(.String) catch return error.ExpectedString;
+    fn command(self: *Parser, allocator: std.mem.Allocator) !*Expr {
+        const name_token =
+            self.consume(.String) catch return error.ExpectedString;
         const name = try allocator.dupe(u8, name_token.String);
+
         var arguments_list: std.ArrayList([]const u8) = .{};
         while (self.check(.String)) {
             const token = self.advance().?;
             const arg = try allocator.dupe(u8, token.String);
             try arguments_list.append(allocator, arg);
         }
-        const expr = try allocator.create(Ast);
+
+        const expr = try allocator.create(Expr);
         expr.* = .{
             .Command = .{
                 .name = name,
@@ -112,10 +108,10 @@ pub const Parser = struct {
         return expr;
     }
 
-    pub fn literal(self: *Parser, allocator: std.mem.Allocator) !*Ast {
+    fn literal(self: *Parser, allocator: std.mem.Allocator) !*Expr {
         const token = self.consume(.String) catch return error.ExpectedString;
         const value = try allocator.dupe(u8, token.String);
-        const expr = try allocator.create(Ast);
+        const expr = try allocator.create(Expr);
         expr.* = .{
             .Literal = value,
         };

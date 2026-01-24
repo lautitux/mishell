@@ -7,6 +7,7 @@ pub const Operator = enum {};
 
 pub const Expr = union(enum) {
     // Binary: struct { lhs: *Expr, op: Operator, rhs: *Expr },
+    Pipeline: []const *Expr,
     Redirect: struct {
         command: *Expr,
         file_descriptor: u8,
@@ -17,7 +18,6 @@ pub const Expr = union(enum) {
         name: []const u8,
         arguments: []const []const u8,
     },
-    Literal: []const u8,
 };
 
 pub const Parser = struct {
@@ -60,9 +60,30 @@ pub const Parser = struct {
     pub fn parse(self: *Parser, arena: *std.heap.ArenaAllocator) !?*Expr {
         if (!self.isAtEnd()) {
             const allocator = arena.allocator();
-            return try self.redirect(allocator);
+            return try self.pipeline(allocator);
         }
         return null;
+    }
+
+    fn pipeline(self: *Parser, allocator: std.mem.Allocator) !*Expr {
+        const lhs = try self.redirect(allocator);
+        if (self.check(.Pipe)) {
+            var pipeline_list: std.ArrayList(*Expr) = .{};
+            try pipeline_list.append(allocator, lhs);
+            while (self.check(.Pipe)) {
+                _ = self.advance();
+                try pipeline_list.append(
+                    allocator,
+                    try self.redirect(allocator),
+                );
+            }
+            const expr = try allocator.create(Expr);
+            expr.* = .{
+                .Pipeline = pipeline_list.items,
+            };
+            return expr;
+        }
+        return lhs;
     }
 
     fn redirect(self: *Parser, allocator: std.mem.Allocator) !*Expr {
@@ -104,16 +125,6 @@ pub const Parser = struct {
                 .name = name,
                 .arguments = arguments_list.items,
             },
-        };
-        return expr;
-    }
-
-    fn literal(self: *Parser, allocator: std.mem.Allocator) !*Expr {
-        const token = self.consume(.String) catch return error.ExpectedString;
-        const value = try allocator.dupe(u8, token.String);
-        const expr = try allocator.create(Expr);
-        expr.* = .{
-            .Literal = value,
         };
         return expr;
     }

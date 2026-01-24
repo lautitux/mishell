@@ -92,8 +92,10 @@ pub const Shell = struct {
         var scanner: Scanner = .init(scanner_arena.allocator(), line);
         const tokens = try scanner.scan();
         if (tokens.len > 0) {
+            std.debug.print("[TK {any}]\n", .{tokens});
             var parser: Parser = .{ .tokens = tokens };
             self.expr = try parser.parse(&self.arena);
+            std.debug.print("[AST {any}]\n", .{self.expr});
         } else {
             self.expr = null;
         }
@@ -130,7 +132,6 @@ pub const Shell = struct {
                         redirect.command.Command.arguments,
                     );
                 },
-                .Literal => return error.UnexpectedLiteral,
             }
         }
     }
@@ -179,13 +180,13 @@ pub const Shell = struct {
             var buffer: [1024]u8 = undefined;
             var child_stdout_reader = child.stdout.?.readerStreaming(&buffer);
             const child_stdout = &child_stdout_reader.interface;
-            stdout_thread = try std.Thread.spawn(.{}, util.pipe, .{ child_stdout, pipe_stdout });
+            stdout_thread = try std.Thread.spawn(.{}, util.redirect, .{ child_stdout, pipe_stdout });
         }
         if (self.pipe_to.stderr) |pipe_stderr| {
             var buffer: [1024]u8 = undefined;
             var child_stderr_reader = child.stderr.?.readerStreaming(&buffer);
             const child_stderr = &child_stderr_reader.interface;
-            stderr_thread = try std.Thread.spawn(.{}, util.pipe, .{ child_stderr, pipe_stderr });
+            stderr_thread = try std.Thread.spawn(.{}, util.redirect, .{ child_stderr, pipe_stderr });
         }
         if (stdout_thread) |thread| thread.join();
         if (stderr_thread) |thread| thread.join();

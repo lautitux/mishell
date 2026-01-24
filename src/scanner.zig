@@ -2,11 +2,13 @@ const std = @import("std");
 const ascii = std.ascii;
 
 pub const TokenKind = enum {
+    Pipe,
     Redirect,
     String,
 };
 
 pub const Token = union(TokenKind) {
+    Pipe: void,
     Redirect: struct {
         file_descriptor: u8,
         append: bool,
@@ -70,6 +72,10 @@ pub const Scanner = struct {
         while (self.peek()) |char| {
             switch (char) {
                 ' ', '\r', '\t', '\n' => _ = self.advance(), // Skip whitespaces
+                '|' => {
+                    _ = self.advance();
+                    return .{ .Pipe = undefined };
+                },
                 else => {
                     const isDigit = ascii.isDigit(char);
                     const isRedirect = char == '>' or (isDigit and self.peekN(1) == '>');
@@ -112,7 +118,7 @@ pub const Scanner = struct {
                     '\'' => try self.scanSingleQuotedString(&char_list),
                     '"' => try self.scanDoubleQuotedString(&char_list),
                     '\\' => escape_next = true,
-                    ' ', '\r', '\t', '\n', '>' => break,
+                    ' ', '\r', '\t', '\n', '>', '|' => break,
                     else => try char_list.append(self.allocator, char),
                 }
             }

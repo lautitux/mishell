@@ -8,7 +8,7 @@ pub fn dupe2(allocator: std.mem.Allocator, comptime T: type, m: []const []const 
     return new_slice;
 }
 
-pub fn pipe(from: *std.Io.Reader, to: *std.Io.Writer) !void {
+pub fn redirect(from: *std.Io.Reader, to: *std.Io.Writer) !void {
     while (from.takeByte()) |byte| {
         to.writeByte(byte) catch return;
     } else |err| {

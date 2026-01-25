@@ -165,14 +165,20 @@ pub const Shell = struct {
                 if (redirect.append)
                     try file.seekFromEnd(0);
                 var new_io = io;
-                if (redirect.file_descriptor == 0) {
-                    new_io.stdin = file;
-                } else if (redirect.file_descriptor == 1) {
-                    new_io.stdout = file;
-                } else if (redirect.file_descriptor == 2) {
-                    new_io.stderr = file;
+                const shell_f: fs.File, const new_io_f: *fs.File =
+                    if (redirect.file_descriptor == 0)
+                        .{ self.io.stdin, &new_io.stdin }
+                    else if (redirect.file_descriptor == 1)
+                        .{ self.io.stdout, &new_io.stdout }
+                    else if (redirect.file_descriptor == 2)
+                        .{ self.io.stderr, &new_io.stderr }
+                    else
+                        return error.UnsupportedRedirect;
+                if (shell_f.handle == new_io_f.handle) {
+                    new_io_f.* = file;
                 } else {
-                    return error.UnsupportedRedirect;
+                    new_io_f.close();
+                    new_io_f.* = file;
                 }
                 try self.evalExpr(gpa, redirect.command, new_io);
             },

@@ -55,6 +55,9 @@ pub const Console = struct {
                             line_pos = kwd.len + 1;
                             break;
                         }
+                    } else {
+                        // No completion found
+                        try stdout.writeByte(0x07); // Bell
                     }
                 },
                 3 => {

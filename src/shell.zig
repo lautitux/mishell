@@ -158,7 +158,6 @@ pub const Shell = struct {
                     redirect.output_file,
                     .{ .truncate = !redirect.append },
                 );
-                defer file.close();
                 if (redirect.append)
                     try file.seekFromEnd(0);
                 var new_io = io;

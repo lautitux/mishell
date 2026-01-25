@@ -111,6 +111,8 @@ pub const Shell = struct {
 
     fn evalExpr(self: *Shell, gpa: std.mem.Allocator, expr: *Expr, override_io: ?IoFiles) !void {
         const io = override_io orelse self.io;
+        var stderr_w = io.stderr.writerStreaming(&.{});
+        const stderr = &stderr_w.interface;
         switch (expr.*) {
             .Command => |cmd| {
                 if (try self.typeof(cmd.name)) |cmd_kind| {
@@ -151,6 +153,8 @@ pub const Shell = struct {
                     if (io.stderr.handle != self.io.stderr.handle) {
                         io.stderr.close();
                     }
+                } else {
+                    try stderr.print("{s}: command not found\n", .{cmd.name});
                 }
             },
             .Redirect => |redirect| {

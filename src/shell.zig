@@ -1,4 +1,6 @@
 const std = @import("std");
+const fs = std.fs;
+const Thread = std.Thread;
 const util = @import("util.zig");
 const Scanner = @import("scanner.zig").Scanner;
 const parser_mod = @import("parser.zig");
@@ -8,25 +10,15 @@ const Expr = parser_mod.Expr;
 pub const Shell = struct {
     should_exit: bool = false,
     env: std.process.EnvMap,
-    pipe_to: Streams = .{},
-    cwd: std.fs.Dir,
-    arena: std.heap.ArenaAllocator,
+    io: IoFiles,
+    cwd: fs.Dir,
+    arena_allocator: std.heap.ArenaAllocator,
     expr: ?*Expr = null,
 
-    var default_stdout_writer = std.fs.File.stdout().writerStreaming(&.{});
-    const default_stdout = &default_stdout_writer.interface;
-
-    var default_stderr_writer = std.fs.File.stderr().writerStreaming(&.{});
-    const default_stderr = &default_stderr_writer.interface;
-
-    var default_stdin_buffer: [4096]u8 = undefined;
-    var default_stdin_reader = std.fs.File.stdin().readerStreaming(&default_stdin_buffer);
-    const default_stdin = &default_stdin_reader.interface;
-
-    pub const Streams = struct {
-        stdin: ?*std.Io.Reader = null,
-        stdout: ?*std.Io.Writer = null,
-        stderr: ?*std.Io.Writer = null,
+    pub const IoFiles = struct {
+        stdin: fs.File,
+        stdout: fs.File,
+        stderr: fs.File,
     };
 
     const BuiltinCommand = enum {
@@ -45,7 +37,7 @@ pub const Shell = struct {
         .{ "cd", .ChangeDir },
     });
 
-    const CommandType = union(enum) {
+    const CommandKind = union(enum) {
         Builtin: BuiltinCommand,
         Executable: []const u8,
     };
@@ -55,145 +47,174 @@ pub const Shell = struct {
         env: std.process.EnvMap,
     ) Shell {
         return .{
-            .arena = .init(allocator),
+            .arena_allocator = .init(allocator),
             .env = env,
-            .cwd = std.fs.cwd(),
+            .cwd = fs.cwd(),
+            .io = .{
+                .stdin = fs.File.stdin(),
+                .stdout = fs.File.stdout(),
+                .stderr = fs.File.stderr(),
+            },
         };
     }
 
     pub fn deinit(self: *Shell) void {
-        self.arena.deinit();
+        self.arena_allocator.deinit();
     }
 
     pub fn prompt(self: *Shell, gpa: std.mem.Allocator) !void {
-        try default_stdout.print("$ ", .{});
+        var stdin_buf: [512]u8 = undefined;
+        var stdin_r = self.io.stdin.readerStreaming(&stdin_buf);
+        const stdin = &stdin_r.interface;
 
-        _ = self.arena.reset(.{ .retain_with_limit = 4096 });
-        const allocator = self.arena.allocator();
-        _ = allocator;
+        var stdout_w = self.io.stdout.writerStreaming(&.{});
+        const stdout = &stdout_w.interface;
+
+        try stdout.print("$ ", .{});
+
+        _ = self.arena_allocator.reset(.retain_capacity);
+
+        var scanner_arena: std.heap.ArenaAllocator = .init(gpa);
+        defer scanner_arena.deinit();
+        const scanner_allocator = scanner_arena.allocator();
+
         var string_builder: std.ArrayList(u8) = .{};
-        defer string_builder.deinit(gpa);
+        defer string_builder.deinit(scanner_allocator);
 
         var keep_reading = true;
         while (keep_reading) {
-            const char = try default_stdin.takeByte();
+            const char = try stdin.takeByte();
             if (char == '\n') {
                 keep_reading = false;
             } else {
-                try string_builder.append(gpa, char);
+                try string_builder.append(scanner_allocator, char);
             }
         }
 
         const line = string_builder.items;
 
-        var scanner_arena: std.heap.ArenaAllocator = .init(gpa);
-        defer scanner_arena.deinit();
-
-        var scanner: Scanner = .init(scanner_arena.allocator(), line);
+        var scanner: Scanner = .init(scanner_allocator, line);
         const tokens = try scanner.scan();
         if (tokens.len > 0) {
-            std.debug.print("[TK {any}]\n", .{tokens});
             var parser: Parser = .{ .tokens = tokens };
-            self.expr = try parser.parse(&self.arena);
-            std.debug.print("[AST {any}]\n", .{self.expr});
+            self.expr = try parser.parse(&self.arena_allocator);
         } else {
             self.expr = null;
         }
     }
 
     pub fn run(self: *Shell, gpa: std.mem.Allocator) !void {
-        self.pipe_to = .{};
-        if (self.expr) |ast| {
-            switch (ast.*) {
-                .Command => |cmd| {
-                    try self.runCommand(gpa, cmd.name, cmd.arguments);
-                },
-                .Redirect => |redirect| {
-                    std.debug.assert(redirect.command.* == .Command);
-                    var file = try self.cwd.createFile(
-                        redirect.output_file,
-                        .{ .truncate = !redirect.append },
-                    );
-                    defer file.close();
-                    if (redirect.append) {
-                        try file.seekFromEnd(0);
+        if (self.expr) |expr| {
+            try self.evalExpr(gpa, expr, null);
+        }
+    }
+
+    fn evalExpr(self: *Shell, gpa: std.mem.Allocator, expr: *Expr, override_io: ?IoFiles) !void {
+        const io = override_io orelse self.io;
+        switch (expr.*) {
+            .Command => |cmd| {
+                if (try self.typeof(cmd.name)) |cmd_kind| {
+                    switch (cmd_kind) {
+                        .Builtin => |builtin| try self.runBuiltin(gpa, builtin, cmd.arguments, io),
+                        .Executable => |dir_path| {
+                            var arena_allocator: std.heap.ArenaAllocator = .init(gpa);
+                            defer arena_allocator.deinit();
+                            const arena = arena_allocator.allocator();
+                            const path = try fs.path.joinZ(arena, &.{ dir_path, cmd.name });
+                            const argv = try arena.allocSentinel(?[*:0]const u8, cmd.arguments.len + 1, null);
+                            argv[0] = try arena.dupeZ(u8, cmd.name);
+                            for (1..argv.len) |i|
+                                argv[i] = try arena.dupeZ(u8, cmd.arguments[i - 1]);
+                            const environ = try std.process.createEnvironFromMap(arena, &self.env, .{});
+                            const pid = try std.posix.fork();
+                            if (pid == 0) {
+                                try std.posix.dup2(io.stdin.handle, std.posix.STDIN_FILENO);
+                                try std.posix.dup2(io.stdout.handle, std.posix.STDOUT_FILENO);
+                                try std.posix.dup2(io.stderr.handle, std.posix.STDERR_FILENO);
+                                const err = std.posix.execveZ(path, argv, environ);
+                                switch (err) {
+                                    else => {},
+                                }
+                                std.process.exit(0);
+                            } else {
+                                _ = std.posix.waitpid(pid, 0);
+                                if (io.stdin.handle != self.io.stdin.handle) {
+                                    io.stdin.close();
+                                }
+                                if (io.stdout.handle != self.io.stdout.handle) {
+                                    io.stdout.close();
+                                }
+                                if (io.stderr.handle != self.io.stderr.handle) {
+                                    io.stderr.close();
+                                }
+                            }
+                        },
                     }
-                    var file_writer = file.writerStreaming(&.{});
-                    if (redirect.file_descriptor == 1) {
-                        self.pipe_to = .{ .stdout = &file_writer.interface };
-                    } else if (redirect.file_descriptor == 2) {
-                        self.pipe_to = .{ .stderr = &file_writer.interface };
-                    } else {
-                        return error.UnsupportedFileDescriptor;
-                    }
-                    try self.runCommand(
+                }
+            },
+            .Redirect => |redirect| {
+                var file = try self.cwd.createFile(
+                    redirect.output_file,
+                    .{ .truncate = !redirect.append },
+                );
+                defer file.close();
+                if (redirect.append)
+                    try file.seekFromEnd(0);
+                var new_io = io;
+                if (redirect.file_descriptor == 0) {
+                    new_io.stdin = file;
+                } else if (redirect.file_descriptor == 1) {
+                    new_io.stdout = file;
+                } else if (redirect.file_descriptor == 2) {
+                    new_io.stderr = file;
+                } else {
+                    return error.UnsupportedRedirect;
+                }
+                try self.evalExpr(gpa, redirect.command, new_io);
+            },
+            .Pipeline => |pipeline| {
+                std.debug.assert(pipeline.len > 1);
+                var processes = try gpa.alloc(Thread, pipeline.len);
+                defer gpa.free(processes);
+                var pipes = try gpa.alloc([2]std.posix.fd_t, pipeline.len - 1);
+                defer gpa.free(pipes);
+                pipes[0] = try std.posix.pipe2(.{ .CLOEXEC = true });
+                processes[0] = try .spawn(.{}, Shell.evalExpr, .{
+                    self,
+                    gpa,
+                    pipeline[0],
+                    IoFiles{
+                        .stdin = io.stdin,
+                        .stdout = .{ .handle = pipes[0][1] },
+                        .stderr = io.stderr,
+                    },
+                });
+                for (1..(pipeline.len - 1)) |i| {
+                    pipes[i] = try std.posix.pipe2(.{ .CLOEXEC = true });
+                    processes[i] = try .spawn(.{}, Shell.evalExpr, .{
+                        self,
                         gpa,
-                        redirect.command.Command.name,
-                        redirect.command.Command.arguments,
-                    );
-                },
-            }
-        }
-    }
-
-    fn runCommand(
-        self: *Shell,
-        gpa: std.mem.Allocator,
-        command: []const u8,
-        arguments: []const []const u8,
-    ) !void {
-        const maybe_command_type = try self.typeof(command);
-        if (maybe_command_type) |command_type| {
-            switch (command_type) {
-                .Builtin => |builtin| try self.runBuiltin(gpa, builtin, arguments),
-                .Executable => |dir_path| try self.runExe(gpa, dir_path, command, arguments),
-            }
-        } else {
-            try default_stderr.print("{s}: command not found\n", .{command});
-        }
-    }
-
-    fn runExe(
-        self: *Shell,
-        gpa: std.mem.Allocator,
-        dir_path: []const u8,
-        command: []const u8,
-        arguments: []const []const u8,
-    ) !void {
-        // const path = try std.fs.path.join(gpa, &.{ dir_path, shell.command });
-        // defer gpa.free(path);
-        _ = dir_path;
-
-        var argv_list: std.ArrayList([]const u8) = .{};
-        defer argv_list.deinit(gpa);
-        try argv_list.append(gpa, command);
-        try argv_list.appendSlice(gpa, arguments);
-
-        var child: std.process.Child = .init(argv_list.items, gpa);
-        child.stdout_behavior = if (self.pipe_to.stdout) |_| .Pipe else .Inherit;
-        child.stderr_behavior = if (self.pipe_to.stderr) |_| .Pipe else .Inherit;
-        try child.spawn();
-        try child.waitForSpawn();
-        var stdout_thread: ?std.Thread = null;
-        var stderr_thread: ?std.Thread = null;
-        if (self.pipe_to.stdout) |pipe_stdout| {
-            var buffer: [1024]u8 = undefined;
-            var child_stdout_reader = child.stdout.?.readerStreaming(&buffer);
-            const child_stdout = &child_stdout_reader.interface;
-            stdout_thread = try std.Thread.spawn(.{}, util.redirect, .{ child_stdout, pipe_stdout });
-        }
-        if (self.pipe_to.stderr) |pipe_stderr| {
-            var buffer: [1024]u8 = undefined;
-            var child_stderr_reader = child.stderr.?.readerStreaming(&buffer);
-            const child_stderr = &child_stderr_reader.interface;
-            stderr_thread = try std.Thread.spawn(.{}, util.redirect, .{ child_stderr, pipe_stderr });
-        }
-        if (stdout_thread) |thread| thread.join();
-        if (stderr_thread) |thread| thread.join();
-        const status = try child.wait();
-        switch (status) {
-            // TODO
-            else => {},
+                        pipeline[i],
+                        IoFiles{
+                            .stdin = .{ .handle = pipes[i - 1][0] },
+                            .stdout = .{ .handle = pipes[i][1] },
+                            .stderr = io.stderr,
+                        },
+                    });
+                }
+                processes[pipeline.len - 1] = try .spawn(.{}, Shell.evalExpr, .{
+                    self,
+                    gpa,
+                    pipeline[pipeline.len - 1],
+                    IoFiles{
+                        .stdin = .{ .handle = pipes[pipeline.len - 2][0] },
+                        .stdout = io.stdout,
+                        .stderr = io.stderr,
+                    },
+                });
+                for (processes) |thread|
+                    thread.join();
+            },
         }
     }
 
@@ -202,9 +223,16 @@ pub const Shell = struct {
         gpa: std.mem.Allocator,
         builtin: BuiltinCommand,
         arguments: []const []const u8,
+        override_io: ?IoFiles,
     ) !void {
-        const stdout = self.pipe_to.stdout orelse default_stdout;
-        const stderr = self.pipe_to.stderr orelse default_stderr;
+        const io = override_io orelse self.io;
+
+        var stdout_w = io.stdout.writerStreaming(&.{});
+        const stdout = &stdout_w.interface;
+
+        var stderr_w = io.stderr.writerStreaming(&.{});
+        const stderr = &stderr_w.interface;
+
         switch (builtin) {
             .Exit => self.should_exit = true,
             .Echo => {
@@ -228,7 +256,7 @@ pub const Shell = struct {
                                 .{
                                     command,
                                     dir_path,
-                                    std.fs.path.sep,
+                                    fs.path.sep,
                                     command,
                                 },
                             ),
@@ -260,7 +288,7 @@ pub const Shell = struct {
         }
     }
 
-    fn typeof(self: *const Shell, command: []const u8) !?CommandType {
+    fn typeof(self: *const Shell, command: []const u8) !?CommandKind {
         if (builtins.get(command)) |builtin| {
             return .{ .Builtin = builtin };
         } else {
@@ -276,7 +304,7 @@ pub const Shell = struct {
         if (self.env.get("PATH")) |path| {
             var iter = std.mem.splitScalar(u8, path, ':');
             while (iter.next()) |dir_path| {
-                var dir = try std.fs.openDirAbsolute(dir_path, .{});
+                var dir = try fs.openDirAbsolute(dir_path, .{});
                 defer dir.close();
                 const stat = dir.statFile(name) catch continue;
                 const permissions = stat.mode & 0o7777;

@@ -6,6 +6,7 @@ const Scanner = @import("scanner.zig").Scanner;
 const parser_mod = @import("parser.zig");
 const Parser = parser_mod.Parser;
 const Expr = parser_mod.Expr;
+const Console = @import("readline.zig").Console;
 
 pub const Shell = struct {
     should_exit: bool = false,
@@ -63,37 +64,32 @@ pub const Shell = struct {
     }
 
     pub fn prompt(self: *Shell, gpa: std.mem.Allocator) !void {
-        var stdin_buf: [512]u8 = undefined;
-        var stdin_r = self.io.stdin.readerStreaming(&stdin_buf);
-        const stdin = &stdin_r.interface;
-
-        var stdout_w = self.io.stdout.writerStreaming(&.{});
-        const stdout = &stdout_w.interface;
-
-        try stdout.print("$ ", .{});
-
         _ = self.arena_allocator.reset(.retain_capacity);
+        self.expr = null;
 
         var scanner_arena: std.heap.ArenaAllocator = .init(gpa);
         defer scanner_arena.deinit();
         const scanner_allocator = scanner_arena.allocator();
 
-        var string_builder: std.ArrayList(u8) = .{};
-        defer string_builder.deinit(scanner_allocator);
+        const console: Console = .{
+            .stdin = self.io.stdin,
+            .stdout = self.io.stdout,
+            .keywords = builtins.keys(),
+        };
 
-        var keep_reading = true;
-        while (keep_reading) {
-            const char = try stdin.takeByte();
-            if (char == '\n') {
-                keep_reading = false;
-            } else {
-                try string_builder.append(scanner_allocator, char);
+        const input = console.prompt(gpa, "$ ") catch |err| {
+            switch (err) {
+                error.EndOfText => return,
+                error.EndOfTransmission => {
+                    self.should_exit = true;
+                    return;
+                },
+                else => return err,
             }
-        }
+        };
+        defer gpa.free(input);
 
-        const line = string_builder.items;
-
-        var scanner: Scanner = .init(scanner_allocator, line);
+        var scanner: Scanner = .init(scanner_allocator, input);
         const tokens = try scanner.scan();
         if (tokens.len > 0) {
             var parser: Parser = .{ .tokens = tokens };

@@ -225,7 +225,7 @@ pub const Shell = struct {
             .Echo => {
                 for (arguments, 0..) |arg, i| {
                     try stdout.writeAll(arg);
-                    if (i != arguments.len) {
+                    if (i != arguments.len - 1) {
                         try stdout.writeAll(" ");
                     }
                 }

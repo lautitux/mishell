@@ -138,17 +138,18 @@ pub const Shell = struct {
                                 std.process.exit(0);
                             } else {
                                 _ = std.posix.waitpid(pid, 0);
-                                if (io.stdin.handle != self.io.stdin.handle) {
-                                    io.stdin.close();
-                                }
-                                if (io.stdout.handle != self.io.stdout.handle) {
-                                    io.stdout.close();
-                                }
-                                if (io.stderr.handle != self.io.stderr.handle) {
-                                    io.stderr.close();
-                                }
                             }
                         },
+                    }
+                    // Cleanup
+                    if (io.stdin.handle != self.io.stdin.handle) {
+                        io.stdin.close();
+                    }
+                    if (io.stdout.handle != self.io.stdout.handle) {
+                        io.stdout.close();
+                    }
+                    if (io.stderr.handle != self.io.stderr.handle) {
+                        io.stderr.close();
                     }
                 }
             },
@@ -176,44 +177,27 @@ pub const Shell = struct {
                 std.debug.assert(pipeline.len > 1);
                 var processes = try gpa.alloc(Thread, pipeline.len);
                 defer gpa.free(processes);
-                var pipes = try gpa.alloc([2]std.posix.fd_t, pipeline.len - 1);
-                defer gpa.free(pipes);
-                pipes[0] = try std.posix.pipe2(.{ .CLOEXEC = true });
-                processes[0] = try .spawn(.{}, Shell.evalExpr, .{
-                    self,
-                    gpa,
-                    pipeline[0],
-                    IoFiles{
-                        .stdin = io.stdin,
-                        .stdout = .{ .handle = pipes[0][1] },
+                var prev_pipe_read: ?std.posix.fd_t = null;
+                for (pipeline, 0..) |sub_expr, i| {
+                    const is_last = i == pipeline.len - 1;
+                    var pipe: ?[2]std.posix.fd_t = null;
+                    if (!is_last) {
+                        pipe = try std.posix.pipe2(.{ .CLOEXEC = true });
+                    }
+                    const new_io: IoFiles = .{
+                        .stdin = if (prev_pipe_read) |fd| .{ .handle = fd } else io.stdin,
+                        .stdout = if (pipe) |p| .{ .handle = p[1] } else io.stdout,
                         .stderr = io.stderr,
-                    },
-                });
-                for (1..(pipeline.len - 1)) |i| {
-                    pipes[i] = try std.posix.pipe2(.{ .CLOEXEC = true });
+                    };
                     processes[i] = try .spawn(.{}, Shell.evalExpr, .{
                         self,
                         gpa,
-                        pipeline[i],
-                        IoFiles{
-                            .stdin = .{ .handle = pipes[i - 1][0] },
-                            .stdout = .{ .handle = pipes[i][1] },
-                            .stderr = io.stderr,
-                        },
+                        sub_expr,
+                        new_io,
                     });
+                    prev_pipe_read = if (pipe) |p| p[0] else null;
                 }
-                processes[pipeline.len - 1] = try .spawn(.{}, Shell.evalExpr, .{
-                    self,
-                    gpa,
-                    pipeline[pipeline.len - 1],
-                    IoFiles{
-                        .stdin = .{ .handle = pipes[pipeline.len - 2][0] },
-                        .stdout = io.stdout,
-                        .stderr = io.stderr,
-                    },
-                });
-                for (processes) |thread|
-                    thread.join();
+                for (processes) |thread| thread.join();
             },
         }
     }

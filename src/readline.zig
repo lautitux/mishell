@@ -163,7 +163,15 @@ pub const Console = struct {
                             }
                         },
                         'B' => {
-                            // TODO
+                            if (history_index < self.history.len - 1) {
+                                history_index += 1;
+                                const command = self.history[history_index];
+                                try clearLine(stdout);
+                                try stdout.print("{s}{s}", .{ ppt, command });
+                                input.clearRetainingCapacity();
+                                try input.appendSlice(gpa, command);
+                                line_pos = command.len;
+                            }
                         },
                         else => continue,
                     }

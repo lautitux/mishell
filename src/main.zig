@@ -16,7 +16,7 @@ pub fn main() !void {
     defer shell.deinit();
 
     while (!shell.should_exit) {
-        try shell.prompt(allocator);
-        try shell.run(allocator);
+        try shell.prompt();
+        try shell.run();
     }
 }

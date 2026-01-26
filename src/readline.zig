@@ -11,6 +11,7 @@ pub const Console = struct {
     stdin: fs.File,
     stdout: fs.File,
 
+    history: []const []const u8,
     completion: struct {
         keywords: []const []const u8,
         path: ?[]const u8,

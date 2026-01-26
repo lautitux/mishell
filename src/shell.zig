@@ -13,8 +13,10 @@ pub const Shell = struct {
     env: std.process.EnvMap,
     io: IoFiles,
     cwd: fs.Dir,
+    allocator: std.mem.Allocator,
     arena_allocator: std.heap.ArenaAllocator,
     expr: ?*Expr = null,
+    history: std.ArrayList([]const u8),
 
     pub const IoFiles = struct {
         stdin: fs.File,
@@ -28,6 +30,7 @@ pub const Shell = struct {
         Type,
         PrintWorkingDir,
         ChangeDir,
+        History,
     };
 
     const builtins: std.StaticStringMap(BuiltinCommand) = .initComptime(&.{
@@ -36,6 +39,7 @@ pub const Shell = struct {
         .{ "type", .Type },
         .{ "pwd", .PrintWorkingDir },
         .{ "cd", .ChangeDir },
+        .{ "history", .History },
     });
 
     const CommandKind = union(enum) {
@@ -48,9 +52,11 @@ pub const Shell = struct {
         env: std.process.EnvMap,
     ) Shell {
         return .{
+            .allocator = allocator,
             .arena_allocator = .init(allocator),
             .env = env,
             .cwd = fs.cwd(),
+            .history = .{},
             .io = .{
                 .stdin = fs.File.stdin(),
                 .stdout = fs.File.stdout(),
@@ -61,19 +67,24 @@ pub const Shell = struct {
 
     pub fn deinit(self: *Shell) void {
         self.arena_allocator.deinit();
+        for (self.history.items) |entry| {
+            self.allocator.free(entry);
+        }
+        self.history.deinit(self.allocator);
     }
 
-    pub fn prompt(self: *Shell, gpa: std.mem.Allocator) !void {
+    pub fn prompt(self: *Shell) !void {
         _ = self.arena_allocator.reset(.retain_capacity);
         self.expr = null;
 
-        var scanner_arena: std.heap.ArenaAllocator = .init(gpa);
+        var scanner_arena: std.heap.ArenaAllocator = .init(self.allocator);
         defer scanner_arena.deinit();
         const scanner_allocator = scanner_arena.allocator();
 
         const console: Console = .{
             .stdin = self.io.stdin,
             .stdout = self.io.stdout,
+            .history = self.history.items,
             .completion = .{
                 .keywords = builtins.keys(),
                 .path = self.env.get("PATH"),
@@ -81,7 +92,7 @@ pub const Shell = struct {
             },
         };
 
-        const input = console.prompt(gpa, "$ ") catch |err| {
+        const input = console.prompt(self.allocator, "$ ") catch |err| {
             switch (err) {
                 error.EndOfText => return,
                 error.EndOfTransmission => {
@@ -91,7 +102,12 @@ pub const Shell = struct {
                 else => return err,
             }
         };
-        defer gpa.free(input);
+        defer self.allocator.free(input);
+
+        try self.history.append(
+            self.allocator,
+            try self.allocator.dupe(u8, input),
+        );
 
         var scanner: Scanner = .init(scanner_allocator, input);
         const tokens = try scanner.scan();
@@ -103,9 +119,9 @@ pub const Shell = struct {
         }
     }
 
-    pub fn run(self: *Shell, gpa: std.mem.Allocator) !void {
+    pub fn run(self: *Shell) !void {
         if (self.expr) |expr| {
-            try self.evalExpr(gpa, expr, null);
+            try self.evalExpr(self.allocator, expr, null);
         }
     }
 
@@ -276,6 +292,11 @@ pub const Shell = struct {
                     };
                     try dir.setAsCwd();
                     self.cwd = dir;
+                }
+            },
+            .History => {
+                for (self.history.items, 0..) |command, i| {
+                    try stdout.print("{d:5}  {s}\n", .{ i + 1, command });
                 }
             },
         }

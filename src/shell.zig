@@ -1,12 +1,14 @@
 const std = @import("std");
 const fs = std.fs;
-const Thread = std.Thread;
+const mem = std.mem;
 const util = @import("util.zig");
-const Scanner = @import("scanner.zig").Scanner;
+const builtins = @import("builtins.zig");
 const parser_mod = @import("parser.zig");
+const Scanner = @import("scanner.zig").Scanner;
+const Console = @import("readline.zig").Console;
+const Thread = std.Thread;
 const Parser = parser_mod.Parser;
 const Expr = parser_mod.Expr;
-const Console = @import("readline.zig").Console;
 
 pub const Shell = struct {
     should_exit: bool = false,
@@ -33,7 +35,7 @@ pub const Shell = struct {
         History,
     };
 
-    const builtins: std.StaticStringMap(BuiltinCommand) = .initComptime(&.{
+    const builtins_map: std.StaticStringMap(BuiltinCommand) = .initComptime(&.{
         .{ "exit", .Exit },
         .{ "echo", .Echo },
         .{ "type", .Type },
@@ -86,7 +88,7 @@ pub const Shell = struct {
             .stdout = self.io.stdout,
             .history = self.history.items,
             .completion = .{
-                .keywords = builtins.keys(),
+                .keywords = builtins_map.keys(),
                 .path = self.env.get("PATH"),
                 .search_in_cwd = true,
             },
@@ -133,31 +135,8 @@ pub const Shell = struct {
             .Command => |cmd| {
                 if (try self.typeof(cmd.name)) |cmd_kind| {
                     switch (cmd_kind) {
-                        .Builtin => |builtin| try self.runBuiltin(gpa, builtin, cmd.arguments, io),
-                        .Executable => |dir_path| {
-                            var arena_allocator: std.heap.ArenaAllocator = .init(gpa);
-                            defer arena_allocator.deinit();
-                            const arena = arena_allocator.allocator();
-                            const path = try fs.path.joinZ(arena, &.{ dir_path, cmd.name });
-                            const argv = try arena.allocSentinel(?[*:0]const u8, cmd.arguments.len + 1, null);
-                            argv[0] = try arena.dupeZ(u8, cmd.name);
-                            for (1..argv.len) |i|
-                                argv[i] = try arena.dupeZ(u8, cmd.arguments[i - 1]);
-                            const environ = try std.process.createEnvironFromMap(arena, &self.env, .{});
-                            const pid = try std.posix.fork();
-                            if (pid == 0) {
-                                try std.posix.dup2(io.stdin.handle, std.posix.STDIN_FILENO);
-                                try std.posix.dup2(io.stdout.handle, std.posix.STDOUT_FILENO);
-                                try std.posix.dup2(io.stderr.handle, std.posix.STDERR_FILENO);
-                                const err = std.posix.execveZ(path, argv, environ);
-                                switch (err) {
-                                    else => {},
-                                }
-                                std.process.exit(0);
-                            } else {
-                                _ = std.posix.waitpid(pid, 0);
-                            }
-                        },
+                        .Builtin => |builtin| try self.runBuiltin(builtin, cmd.arguments, io),
+                        .Executable => |dir_path| try self.runExe(cmd.name, dir_path, cmd.arguments, io),
                     }
                     // Cleanup
                     if (io.stdin.handle != self.io.stdin.handle) {
@@ -227,15 +206,43 @@ pub const Shell = struct {
         }
     }
 
+    fn runExe(
+        self: *Shell,
+        exe_name: []const u8,
+        dir_path: []const u8,
+        arguments: []const []const u8,
+        io: IoFiles,
+    ) !void {
+        var arena_allocator: std.heap.ArenaAllocator = .init(self.allocator);
+        defer arena_allocator.deinit();
+        const arena = arena_allocator.allocator();
+        const path = try fs.path.joinZ(arena, &.{ dir_path, exe_name });
+        const argv = try arena.allocSentinel(?[*:0]const u8, arguments.len + 1, null);
+        argv[0] = try arena.dupeZ(u8, exe_name);
+        for (1..argv.len) |i|
+            argv[i] = try arena.dupeZ(u8, arguments[i - 1]);
+        const environ = try std.process.createEnvironFromMap(arena, &self.env, .{});
+        const pid = try std.posix.fork();
+        if (pid == 0) {
+            try std.posix.dup2(io.stdin.handle, std.posix.STDIN_FILENO);
+            try std.posix.dup2(io.stdout.handle, std.posix.STDOUT_FILENO);
+            try std.posix.dup2(io.stderr.handle, std.posix.STDERR_FILENO);
+            const err = std.posix.execveZ(path, argv, environ);
+            switch (err) {
+                else => {}, // Ignore error
+            }
+            std.process.exit(0);
+        } else {
+            _ = std.posix.waitpid(pid, 0);
+        }
+    }
+
     fn runBuiltin(
         self: *Shell,
-        gpa: std.mem.Allocator,
         builtin: BuiltinCommand,
         arguments: []const []const u8,
-        override_io: ?IoFiles,
+        io: IoFiles,
     ) !void {
-        const io = override_io orelse self.io;
-
         var stdout_w = io.stdout.writerStreaming(&.{});
         const stdout = &stdout_w.interface;
 
@@ -243,76 +250,17 @@ pub const Shell = struct {
         const stderr = &stderr_w.interface;
 
         switch (builtin) {
-            .Exit => self.should_exit = true,
-            .Echo => {
-                for (arguments, 0..) |arg, i| {
-                    try stdout.writeAll(arg);
-                    if (i != arguments.len - 1) {
-                        try stdout.writeAll(" ");
-                    }
-                }
-                try stdout.writeByte('\n');
-                try stdout.flush();
-            },
-            .Type => {
-                for (arguments) |command| {
-                    const maybe_command_type = try self.typeof(command);
-                    if (maybe_command_type) |command_type| {
-                        switch (command_type) {
-                            .Builtin => |_| try stdout.print("{s} is a shell builtin\n", .{command}),
-                            .Executable => |dir_path| try stdout.print(
-                                "{s} is {s}{c}{s}\n",
-                                .{
-                                    command,
-                                    dir_path,
-                                    fs.path.sep,
-                                    command,
-                                },
-                            ),
-                        }
-                    } else {
-                        try stderr.print("{s}: not found\n", .{command});
-                    }
-                }
-            },
-            .PrintWorkingDir => {
-                var buffer: [1024]u8 = undefined;
-                const path = try self.cwd.realpath(".", &buffer);
-                try stdout.print("{s}\n", .{path});
-            },
-            .ChangeDir => {
-                if (arguments.len == 1) {
-                    const arg = arguments[0];
-                    const home_dir = self.env.get("HOME") orelse ".";
-                    const path = try std.mem.replaceOwned(u8, gpa, arg, "~", home_dir);
-                    defer gpa.free(path);
-                    const dir = self.cwd.openDir(path, .{}) catch {
-                        try stderr.print("cd: {s}: No such file or directory\n", .{path});
-                        return;
-                    };
-                    try dir.setAsCwd();
-                    self.cwd = dir;
-                }
-            },
-            .History => {
-                const min = std.mem.min;
-                const history_len = self.history.items.len;
-                const start = start: {
-                    if (arguments.len > 0) {
-                        const val = std.fmt.parseInt(usize, arguments[0], 10) catch break :start 0;
-                        break :start history_len - min(usize, &.{ history_len, val });
-                    }
-                    break :start 0;
-                };
-                for (start..history_len) |i| {
-                    try stdout.print("{d:5}  {s}\n", .{ i + 1, self.history.items[i] });
-                }
-            },
+            .Exit => builtins.exit(self),
+            .Echo => try builtins.echo(stdout, arguments),
+            .Type => try builtins._type(self, stdout, stderr, arguments),
+            .PrintWorkingDir => try builtins.pwd(self, stdout),
+            .ChangeDir => try builtins.cd(self, stderr, arguments),
+            .History => try builtins.history(self, stdout, stderr, arguments),
         }
     }
 
-    fn typeof(self: *const Shell, command: []const u8) !?CommandKind {
-        if (builtins.get(command)) |builtin| {
+    pub fn typeof(self: *const Shell, command: []const u8) !?CommandKind {
+        if (builtins_map.get(command)) |builtin| {
             return .{ .Builtin = builtin };
         } else {
             const maybe_dir = try self.find_executable(command);

@@ -71,11 +71,11 @@ pub const Shell = struct {
         defer scanner_arena.deinit();
         const scanner_allocator = scanner_arena.allocator();
 
-        const console: Console = .{
-            .stdin = self.io.stdin,
-            .stdout = self.io.stdout,
+        const console: Console = .{ .stdin = self.io.stdin, .stdout = self.io.stdout, .completion = .{
             .keywords = builtins.keys(),
-        };
+            .path = self.env.get("PATH"),
+            .search_in_cwd = true,
+        } };
 
         const input = console.prompt(gpa, "$ ") catch |err| {
             switch (err) {
@@ -295,11 +295,8 @@ pub const Shell = struct {
             while (iter.next()) |dir_path| {
                 var dir = try fs.openDirAbsolute(dir_path, .{});
                 defer dir.close();
-                const stat = dir.statFile(name) catch continue;
-                const permissions = stat.mode & 0o7777;
-                if (permissions & 0o111 > 0) {
-                    return dir_path;
-                }
+                const is_exec = util.isExecutable(dir, name) catch continue;
+                if (is_exec) return name;
             }
         }
         return null;

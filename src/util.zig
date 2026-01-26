@@ -7,3 +7,9 @@ pub fn dupe2(allocator: std.mem.Allocator, comptime T: type, m: []const []const 
     }
     return new_slice;
 }
+
+pub fn isExecutable(dir: std.fs.Dir, sub_path: []const u8) !bool {
+    const stat = try dir.statFile(sub_path);
+    const permissions = stat.mode & 0o7777;
+    return permissions & 0o111 > 0;
+}

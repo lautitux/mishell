@@ -295,8 +295,17 @@ pub const Shell = struct {
                 }
             },
             .History => {
-                for (self.history.items, 0..) |command, i| {
-                    try stdout.print("{d:5}  {s}\n", .{ i + 1, command });
+                const min = std.mem.min;
+                const history_len = self.history.items.len;
+                const start = start: {
+                    if (arguments.len > 0) {
+                        const val = std.fmt.parseInt(usize, arguments[0], 10) catch break :start 0;
+                        break :start history_len - min(usize, &.{ history_len, val });
+                    }
+                    break :start 0;
+                };
+                for (start..history_len) |i| {
+                    try stdout.print("{d:5}  {s}\n", .{ i + 1, self.history.items[i] });
                 }
             },
         }

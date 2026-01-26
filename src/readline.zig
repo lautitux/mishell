@@ -50,22 +50,22 @@ pub const Console = struct {
             if (entry.kind != .file) continue;
             const isExec = util.isExecutable(dir, entry.name) catch false;
             if (!isExec) continue;
-            if (mem.startsWith(u8, entry.name, input)) {
-                if (!completions_set.contains(entry.name)) {
-                    try completions_set.insert(entry.name);
-                }
+            if (mem.startsWith(u8, entry.name, input) and !completions_set.contains(entry.name)) {
+                try completions_set.insert(entry.name);
             }
-        } else |_| {}
+        } else |_| {} // Ignore errors iterating dir
     }
 
     fn getCompletions(self: *const Console, input: []const u8, gpa: std.mem.Allocator) !?[][]const u8 {
         var completions_set: std.BufSet = .init(gpa);
         defer completions_set.deinit();
+
         for (self.completion.keywords) |kwd| {
             if (mem.startsWith(u8, kwd, input)) {
                 try completions_set.insert(kwd);
             }
         }
+
         if (self.completion.path) |path| {
             var path_iter = mem.splitScalar(u8, path, ':');
             while (path_iter.next()) |dir_path| {
@@ -74,16 +74,21 @@ pub const Console = struct {
                 try getCompletionsFromDir(&completions_set, dir, input);
             }
         }
+
         if (self.completion.search_in_cwd) {
             if (fs.cwd().openDir(".", .{ .iterate = true })) |cwd| {
                 try getCompletionsFromDir(&completions_set, cwd, input);
             } else |_| {}
         }
+
         if (completions_set.count() > 0) {
-            const completions = try gpa.alloc([]const u8, completions_set.count());
+            const completions = try gpa.alloc(
+                []const u8,
+                completions_set.count(),
+            );
             var i: usize = 0;
-            var set_iter = completions_set.iterator();
-            while (set_iter.next()) |key| : (i += 1) {
+            var completions_set_iter = completions_set.iterator();
+            while (completions_set_iter.next()) |key| : (i += 1) {
                 completions[i] = try gpa.dupe(u8, key.*);
             }
             return completions;
@@ -111,51 +116,16 @@ pub const Console = struct {
 
         while (stdin.takeByte()) |char| {
             switch (char) {
-                '\n' => {
-                    break;
-                },
+                '\n' => break,
                 '\t' => {
-                    var arena_allocator: std.heap.ArenaAllocator = .init(gpa);
-                    defer arena_allocator.deinit();
-                    const arena = arena_allocator.allocator();
-                    const maybe_completions = try self.getCompletions(input.items, arena);
-                    if (maybe_completions) |completions| {
-                        if (completions.len == 1) {
-                            try clearLine(stdout);
-                            try stdout.print("\r{s}{s} ", .{ ppt, completions[0] });
-                            input.clearRetainingCapacity();
-                            try input.appendSlice(gpa, completions[0]);
-                            try input.append(gpa, ' ');
-                            line_pos = completions[0].len + 1;
-                        } else if (util.longestCommonPrefix(u8, completions)) |longest_prefix| {
-                            if (mem.startsWith(u8, input.items, longest_prefix)) {
-                                if (double_tab) {
-                                    mem.sort([]const u8, completions, {}, lessThan);
-                                    try stdout.writeByte('\n');
-                                    for (completions, 0..) |completion, i| {
-                                        try stdout.writeAll(completion);
-                                        if (i < completions.len - 1) {
-                                            try stdout.writeAll("  ");
-                                        }
-                                    }
-                                    try stdout.writeByte('\n');
-                                    try stdout.writeAll(ppt);
-                                    try stdout.writeAll(input.items);
-                                } else {
-                                    try stdout.writeByte(BELL);
-                                }
-                            } else {
-                                try clearLine(stdout);
-                                try stdout.print("\r{s}{s}", .{ ppt, longest_prefix });
-                                input.clearRetainingCapacity();
-                                try input.appendSlice(gpa, longest_prefix);
-                                line_pos = longest_prefix.len;
-                            }
-                        }
-                    } else {
-                        try stdout.writeByte(BELL);
-                    }
-                    double_tab = !double_tab;
+                    line_pos =
+                        try self.handleTab(
+                            gpa,
+                            &double_tab,
+                            stdout,
+                            ppt,
+                            &input,
+                        );
                 },
                 ETX => {
                     // ^C
@@ -205,5 +175,65 @@ pub const Console = struct {
 
         try self.endRaw();
         return input.toOwnedSlice(gpa);
+    }
+
+    fn handleTab(
+        self: *const Console,
+        gpa: std.mem.Allocator,
+        double_tab: *bool,
+        stdout: *std.Io.Writer,
+        ppt: []const u8,
+        input: *std.ArrayList(u8),
+    ) !usize {
+        var arena_allocator: std.heap.ArenaAllocator = .init(gpa);
+        defer arena_allocator.deinit();
+        const arena = arena_allocator.allocator();
+
+        if (try self.getCompletions(input.items, arena)) |completions| {
+            // SAFETY: completions is not empty, and at least all
+            //         possible completions start with 'input'
+            const prefix = util.longestCommonPrefix(u8, completions).?;
+            const unique = completions.len == 1;
+            if (unique or !mem.startsWith(u8, input.items, prefix)) {
+                try clearLine(stdout);
+                try stdout.print(
+                    "\r{s}{s}{s}",
+                    .{
+                        ppt,
+                        prefix,
+                        if (unique) " " else "",
+                    },
+                );
+
+                input.clearRetainingCapacity();
+                try input.appendSlice(gpa, prefix);
+                if (unique) try input.append(gpa, ' ');
+
+                double_tab.* = false;
+                return prefix.len + @as(usize, if (unique) 1 else 0);
+            } else if (double_tab.*) {
+                mem.sort([]const u8, completions, {}, lessThan);
+                try stdout.writeByte('\n');
+
+                for (completions, 0..) |candidate, i| {
+                    try stdout.print(
+                        "{s}{s}",
+                        .{
+                            candidate,
+                            if (i < completions.len - 1) "  " else "\n",
+                        },
+                    );
+                }
+
+                try stdout.print("{s}{s}", .{ ppt, input.items });
+
+                double_tab.* = false;
+                return input.items.len;
+            }
+        }
+
+        try stdout.writeByte(BELL);
+        double_tab.* = true;
+        return input.items.len;
     }
 };

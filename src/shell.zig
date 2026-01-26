@@ -71,11 +71,15 @@ pub const Shell = struct {
         defer scanner_arena.deinit();
         const scanner_allocator = scanner_arena.allocator();
 
-        const console: Console = .{ .stdin = self.io.stdin, .stdout = self.io.stdout, .completion = .{
-            .keywords = builtins.keys(),
-            .path = self.env.get("PATH"),
-            .search_in_cwd = true,
-        } };
+        const console: Console = .{
+            .stdin = self.io.stdin,
+            .stdout = self.io.stdout,
+            .completion = .{
+                .keywords = builtins.keys(),
+                .path = self.env.get("PATH"),
+                .search_in_cwd = true,
+            },
+        };
 
         const input = console.prompt(gpa, "$ ") catch |err| {
             switch (err) {

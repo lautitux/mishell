@@ -296,7 +296,7 @@ pub const Shell = struct {
                 var dir = try fs.openDirAbsolute(dir_path, .{});
                 defer dir.close();
                 const is_exec = util.isExecutable(dir, name) catch continue;
-                if (is_exec) return name;
+                if (is_exec) return dir_path;
             }
         }
         return null;

@@ -29,6 +29,21 @@ pub const Console = struct {
         try std.posix.tcsetattr(self.stdin.handle, .FLUSH, termios);
     }
 
+    fn getCompletionsFromDir(completions_set: *std.BufSet, dir: fs.Dir, input: []const u8) !void {
+        var dir_iter = dir.iterate();
+        while (dir_iter.next()) |maybe_entry| {
+            const entry = maybe_entry orelse break;
+            if (entry.kind != .file) continue;
+            const isExec = util.isExecutable(dir, entry.name) catch false;
+            if (!isExec) continue;
+            if (mem.startsWith(u8, entry.name, input)) {
+                if (!completions_set.contains(entry.name)) {
+                    try completions_set.insert(entry.name);
+                }
+            }
+        } else |_| {}
+    }
+
     fn getCompletions(self: *const Console, input: []const u8, gpa: std.mem.Allocator) !?[][]const u8 {
         var completions_set: std.BufSet = .init(gpa);
         defer completions_set.deinit();
@@ -42,42 +57,20 @@ pub const Console = struct {
             while (path_iter.next()) |dir_path| {
                 var dir = fs.openDirAbsolute(dir_path, .{ .iterate = true }) catch continue;
                 defer dir.close();
-                var dir_iter = dir.iterate();
-                while (dir_iter.next() catch continue) |entry| {
-                    if (entry.kind != .file) continue;
-                    const isExec = util.isExecutable(dir, entry.name) catch false;
-                    if (!isExec) continue;
-                    if (mem.startsWith(u8, entry.name, input)) {
-                        if (!completions_set.contains(entry.name)) {
-                            try completions_set.insert(entry.name);
-                        }
-                    }
-                }
+                try getCompletionsFromDir(&completions_set, dir, input);
             }
         }
         if (self.completion.search_in_cwd) {
             if (fs.cwd().openDir(".", .{ .iterate = true })) |cwd| {
-                var dir_iter = cwd.iterate();
-                while (dir_iter.next()) |maybe_entry| {
-                    const entry = maybe_entry orelse break;
-                    if (entry.kind != .file) continue;
-                    const isExec = util.isExecutable(cwd, entry.name) catch false;
-                    if (!isExec) continue;
-                    if (mem.startsWith(u8, entry.name, input)) {
-                        if (!completions_set.contains(entry.name)) {
-                            try completions_set.insert(entry.name);
-                        }
-                    }
-                } else |_| {}
+                try getCompletionsFromDir(&completions_set, cwd, input);
             } else |_| {}
         }
         if (completions_set.count() > 0) {
             const completions = try gpa.alloc([]const u8, completions_set.count());
-            var set_iter = completions_set.iterator();
             var i: usize = 0;
-            while (set_iter.next()) |key| {
+            var set_iter = completions_set.iterator();
+            while (set_iter.next()) |key| : (i += 1) {
                 completions[i] = try gpa.dupe(u8, key.*);
-                i += 1;
             }
             return completions;
         } else {
@@ -125,20 +118,33 @@ pub const Console = struct {
                             try input.appendSlice(gpa, completions[0]);
                             try input.append(gpa, ' ');
                             line_pos = completions[0].len + 1;
-                        } else if (double_tab) {
-                            mem.sort([]const u8, completions, {}, lessThan);
-                            try stdout.writeByte('\n');
-                            for (completions, 0..) |completion, i| {
-                                try stdout.writeAll(completion);
-                                if (i < completions.len - 1) {
-                                    try stdout.writeAll("  ");
+                        } else if (util.longestCommonPrefix(u8, completions)) |longest_prefix| {
+                            if (mem.startsWith(u8, input.items, longest_prefix)) {
+                                if (double_tab) {
+                                    mem.sort([]const u8, completions, {}, lessThan);
+                                    try stdout.writeByte('\n');
+                                    for (completions, 0..) |completion, i| {
+                                        try stdout.writeAll(completion);
+                                        if (i < completions.len - 1) {
+                                            try stdout.writeAll("  ");
+                                        }
+                                    }
+                                    try stdout.writeByte('\n');
+                                    try stdout.writeAll(ppt);
+                                    try stdout.writeAll(input.items);
+                                } else {
+                                    try stdout.writeByte(0x07); // Bell
                                 }
+                            } else {
+                                try stdout.writeByte('\r'); // Goto start of line
+                                try stdout.writeAll(&.{ 27, '[', 'K' }); // Clear line
+                                try stdout.writeByte('\r'); // Goto start of line
+                                try stdout.writeAll(ppt);
+                                try stdout.writeAll(longest_prefix);
+                                input.clearRetainingCapacity();
+                                try input.appendSlice(gpa, longest_prefix);
+                                line_pos = longest_prefix.len;
                             }
-                            try stdout.writeByte('\n');
-                            try stdout.writeAll(ppt);
-                            try stdout.writeAll(input.items);
-                        } else {
-                            try stdout.writeByte(0x07); // Bell
                         }
                     } else {
                         try stdout.writeByte(0x07); // Bell

@@ -156,7 +156,10 @@ pub const Console = struct {
                                 history_index -= 1;
                                 const command = self.history[history_index];
                                 try clearLine(stdout);
-                                std.debug.print("{s}{s}", .{ ppt, command });
+                                try stdout.print("{s}{s}", .{ ppt, command });
+                                input.clearRetainingCapacity();
+                                try input.appendSlice(gpa, command);
+                                line_pos = command.len;
                             }
                         },
                         'B' => {

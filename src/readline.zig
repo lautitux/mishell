@@ -109,10 +109,11 @@ pub const Console = struct {
 
         try stdout.writeAll(ppt);
 
-        var line_pos: usize = 0;
         var input: std.ArrayList(u8) = .{};
         errdefer input.deinit(gpa);
 
+        var line_pos: usize = 0;
+        var history_index: usize = self.history.len;
         var double_tab = false;
 
         while (stdin.takeByte()) |char| {
@@ -149,7 +150,20 @@ pub const Console = struct {
                     var next_char = try stdin.takeByte();
                     std.debug.assert(next_char == '[');
                     next_char = try stdin.takeByte();
-                    continue;
+                    switch (next_char) {
+                        'A' => {
+                            if (history_index > 0) {
+                                history_index -= 1;
+                                const command = self.history[history_index];
+                                try clearLine(stdout);
+                                std.debug.print("{s}{s}", .{ ppt, command });
+                            }
+                        },
+                        'B' => {
+                            // TODO
+                        },
+                        else => continue,
+                    }
                 },
                 DEL => {
                     // Backspace

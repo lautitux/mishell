@@ -3,6 +3,10 @@ const fs = std.fs;
 const mem = std.mem;
 const util = @import("util.zig");
 
+fn lessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
+    return mem.order(u8, lhs, rhs) == .lt;
+}
+
 pub const Console = struct {
     stdin: fs.File,
     stdout: fs.File,
@@ -25,7 +29,7 @@ pub const Console = struct {
         try std.posix.tcsetattr(self.stdin.handle, .FLUSH, termios);
     }
 
-    fn getCompletions(self: *const Console, input: []const u8, gpa: std.mem.Allocator) !?[]const []const u8 {
+    fn getCompletions(self: *const Console, input: []const u8, gpa: std.mem.Allocator) !?[][]const u8 {
         var completions_set: std.BufSet = .init(gpa);
         defer completions_set.deinit();
         for (self.completion.keywords) |kwd| {
@@ -96,6 +100,8 @@ pub const Console = struct {
         var input: std.ArrayList(u8) = .{};
         errdefer input.deinit(gpa);
 
+        var double_tab = false;
+
         while (stdin.takeByte()) |char| {
             // https://www.asciitable.com/
             switch (char) {
@@ -119,10 +125,23 @@ pub const Console = struct {
                             try input.appendSlice(gpa, completions[0]);
                             try input.append(gpa, ' ');
                             line_pos = completions[0].len + 1;
+                        } else if (double_tab) {
+                            mem.sort([]const u8, completions, {}, lessThan);
+                            try stdout.writeByte('\n');
+                            for (completions, 0..) |completion, i| {
+                                try stdout.writeAll(completion);
+                                if (i < completions.len - 1) {
+                                    try stdout.writeAll("  ");
+                                }
+                            }
+                            try stdout.writeByte('\n');
+                            try stdout.writeAll(ppt);
+                            try stdout.writeAll(input.items);
                         }
                     } else {
                         try stdout.writeByte(0x07); // Bell
                     }
+                    double_tab = !double_tab;
                 },
                 3 => {
                     // ^C

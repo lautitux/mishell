@@ -17,6 +17,15 @@ pub const Console = struct {
         search_in_cwd: bool = false,
     },
 
+    // https://www.asciitable.com/
+    const ETX = 0x03; // End of text
+    const EOT = 0x04; // End of transmission
+    const BELL = 0x07;
+    const BACKSPACE = 0x08;
+    const NEW_PAGE = 0x0C;
+    const ESC = 0x1B;
+    const DEL = 0x7F;
+
     fn beginRaw(self: *const Console) !void {
         var termios = try std.posix.tcgetattr(self.stdin.handle);
         termios.lflag = .{ .ICANON = false, .ECHO = false };
@@ -27,6 +36,11 @@ pub const Console = struct {
         var termios = try std.posix.tcgetattr(self.stdin.handle);
         termios.lflag = .{ .ICANON = true, .ECHO = true };
         try std.posix.tcsetattr(self.stdin.handle, .FLUSH, termios);
+    }
+
+    fn clearLine(stdout: *std.Io.Writer) !void {
+        try stdout.writeByte('\r'); // Goto start of line
+        try stdout.writeAll(&.{ ESC, '[', 'K' }); // Clear line
     }
 
     fn getCompletionsFromDir(completions_set: *std.BufSet, dir: fs.Dir, input: []const u8) !void {
@@ -96,7 +110,6 @@ pub const Console = struct {
         var double_tab = false;
 
         while (stdin.takeByte()) |char| {
-            // https://www.asciitable.com/
             switch (char) {
                 '\n' => {
                     break;
@@ -108,12 +121,8 @@ pub const Console = struct {
                     const maybe_completions = try self.getCompletions(input.items, arena);
                     if (maybe_completions) |completions| {
                         if (completions.len == 1) {
-                            try stdout.writeByte('\r'); // Goto start of line
-                            try stdout.writeAll(&.{ 27, '[', 'K' }); // Clear line
-                            try stdout.writeByte('\r'); // Goto start of line
-                            try stdout.writeAll(ppt);
-                            try stdout.writeAll(completions[0]);
-                            try stdout.writeByte(' ');
+                            try clearLine(stdout);
+                            try stdout.print("\r{s}{s} ", .{ ppt, completions[0] });
                             input.clearRetainingCapacity();
                             try input.appendSlice(gpa, completions[0]);
                             try input.append(gpa, ' ');
@@ -133,52 +142,49 @@ pub const Console = struct {
                                     try stdout.writeAll(ppt);
                                     try stdout.writeAll(input.items);
                                 } else {
-                                    try stdout.writeByte(0x07); // Bell
+                                    try stdout.writeByte(BELL);
                                 }
                             } else {
-                                try stdout.writeByte('\r'); // Goto start of line
-                                try stdout.writeAll(&.{ 27, '[', 'K' }); // Clear line
-                                try stdout.writeByte('\r'); // Goto start of line
-                                try stdout.writeAll(ppt);
-                                try stdout.writeAll(longest_prefix);
+                                try clearLine(stdout);
+                                try stdout.print("\r{s}{s}", .{ ppt, longest_prefix });
                                 input.clearRetainingCapacity();
                                 try input.appendSlice(gpa, longest_prefix);
                                 line_pos = longest_prefix.len;
                             }
                         }
                     } else {
-                        try stdout.writeByte(0x07); // Bell
+                        try stdout.writeByte(BELL);
                     }
                     double_tab = !double_tab;
                 },
-                3 => {
+                ETX => {
                     // ^C
                     try stdout.writeByte('\n');
                     return error.EndOfText;
                 },
-                4 => {
+                EOT => {
                     // ^D
                     return error.EndOfTransmission;
                 },
-                12 => {
+                NEW_PAGE => {
                     // ^L
-                    try stdout.writeAll(&.{ 27, '[', '2', 'J' }); // Clear screen
-                    try stdout.writeAll(&.{ 27, '[', 'H' }); // Cursor to home
+                    try stdout.writeAll(&.{ ESC, '[', '2', 'J' }); // Clear screen
+                    try stdout.writeAll(&.{ ESC, '[', 'H' }); // Cursor to home
                     try stdout.writeAll(ppt);
                     try stdout.writeAll(input.items);
                 },
-                27 => {
+                ESC => {
                     // TODO: Support escape codes
                     var next_char = try stdin.takeByte();
                     std.debug.assert(next_char == '[');
                     next_char = try stdin.takeByte();
                     continue;
                 },
-                127 => {
+                DEL => {
                     // Backspace
                     if (line_pos > 0) {
                         _ = input.pop();
-                        try stdout.writeAll(&.{ 0x08, ' ', 0x08 });
+                        try stdout.writeAll(&.{ BACKSPACE, ' ', BACKSPACE });
                         line_pos -= 1;
                     }
                 },

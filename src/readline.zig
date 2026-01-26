@@ -137,6 +137,8 @@ pub const Console = struct {
                             try stdout.writeByte('\n');
                             try stdout.writeAll(ppt);
                             try stdout.writeAll(input.items);
+                        } else {
+                            try stdout.writeByte(0x07); // Bell
                         }
                     } else {
                         try stdout.writeByte(0x07); // Bell

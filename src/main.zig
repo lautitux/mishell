@@ -15,8 +15,20 @@ pub fn main() !void {
     var shell: Shell = .init(allocator, env);
     defer shell.deinit();
 
+    if (env.get("HISTFILE")) |history_file_path| history: {
+        const file = std.fs.openFileAbsolute(history_file_path, .{}) catch break :history;
+        defer file.close();
+        try shell.loadHistory(file);
+    }
+
     while (!shell.should_exit) {
         try shell.prompt();
         try shell.run();
+    }
+
+    if (env.get("HISTFILE")) |history_file_path| history: {
+        const file = std.fs.createFileAbsolute(history_file_path, .{}) catch break :history;
+        defer file.close();
+        try shell.storeHistory(file, .{});
     }
 }

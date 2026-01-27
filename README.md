@@ -1,34 +1,16 @@
-[![progress-banner](https://backend.codecrafters.io/progress/shell/58db6bbc-1246-4e05-a179-af468990c699)](https://app.codecrafters.io/users/codecrafters-bot?r=2qF)
+# $ MiShell 
 
-This is a starting point for Zig solutions to the
-["Build Your Own Shell" Challenge](https://app.codecrafters.io/courses/shell/overview).
+This repository is my solution to the ["Build Your Own Shell" Challenge](https://app.codecrafters.io/courses/shell/overview). It implements a very basic shell with support for running builtins (exit, echo, type, pwd, cd, history) as well as executables that are in your path.
 
-In this challenge, you'll build your own POSIX compliant shell that's capable of
-interpreting shell commands, running external programs and builtin commands like
-cd, pwd, echo and more. Along the way, you'll learn about shell command parsing,
-REPLs, builtin commands, and more.
+The currently supported features are:
+* Strings without variable interpolation.
+* Stdout and stderr redirection via the `>` and `>>` operators.
+* Command pipelines via the `|` operator.
+* Basic tab completion for builtins and executable files in $PATH only for the first word.
+* Up and down arrow history navigation.
 
-**Note**: If you're viewing this repo on GitHub, head over to
-[codecrafters.io](https://codecrafters.io) to try the challenge.
+On the user input side, cursor movement is limited because I decided not to use a library such as readline and implement the basics myself. Currently apart from tab-completion and history navigation it implements some basic keybord command such as: `Ctrl+C` end of text, `Ctrl-D` end of transimission (same as exit builtin), `Ctrl+L` clears the screen.
 
-# Passing the first stage
+## $ How to run it?
 
-The entry point for your `shell` implementation is in `src/main.zig`. Study and
-uncomment the relevant code, and push your changes to pass the first stage:
-
-```sh
-git commit -am "pass 1st stage" # any msg
-git push origin master
-```
-
-Time to move on to the next stage!
-
-# Stage 2 & beyond
-
-Note: This section is for stages 2 and beyond.
-
-1. Ensure you have `zig (0.15)` installed locally
-1. Run `./your_program.sh` to run your program, which is implemented in
-   `src/main.zig`.
-1. Commit your changes and run `git push origin master` to submit your solution
-   to CodeCrafters. Test output will be streamed to your terminal.
+To run the project make sure to have **zig** version 0.15.2 installed, then clone the repo and run `zig build run`. It should compile and run effectivley on linux (and probably so on other posix operating systems, though I haven't tried)

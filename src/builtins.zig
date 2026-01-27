@@ -68,6 +68,7 @@ pub fn history(shell: *Shell, stdout: *Writer, stderr: *Writer, args: []const []
     var opt: struct {
         read_from_file: ?[]const u8 = null,
         write_to_file: ?[]const u8 = null,
+        append: bool = false,
         max_lines: ?usize = null,
     } = .{};
     var arg_i: usize = 0;
@@ -76,6 +77,10 @@ pub fn history(shell: *Shell, stdout: *Writer, stderr: *Writer, args: []const []
             switch (args[arg_i][1]) {
                 'r' => opt.read_from_file = args[arg_i + 1],
                 'w' => opt.write_to_file = args[arg_i + 1],
+                'a' => {
+                    opt.write_to_file = args[arg_i + 1];
+                    opt.append = true;
+                },
                 else => {
                     try stderr.print("history: -{c}: invalid option\n", .{args[arg_i][1]});
                     return;
@@ -102,8 +107,11 @@ pub fn history(shell: *Shell, stdout: *Writer, stderr: *Writer, args: []const []
         defer file.close();
         try shell.loadHistory(file);
     } else if (opt.write_to_file) |file_path| {
-        const file = try shell.cwd.createFile(file_path, .{});
+        const file = try shell.cwd.createFile(file_path, .{ .truncate = !opt.append });
         defer file.close();
+        if (opt.append) {
+            try file.seekFromEnd(0);
+        }
         try shell.storeHistory(file);
     } else {
         const start = history_len - mem.min(usize, &.{ history_len, opt.max_lines orelse history_len });

@@ -67,6 +67,7 @@ pub fn history(shell: *Shell, stdout: *Writer, stderr: *Writer, args: []const []
     const history_len = shell.history.items.len;
     var opt: struct {
         read_from_file: ?[]const u8 = null,
+        write_to_file: ?[]const u8 = null,
         max_lines: ?usize = null,
     } = .{};
     var arg_i: usize = 0;
@@ -74,6 +75,7 @@ pub fn history(shell: *Shell, stdout: *Writer, stderr: *Writer, args: []const []
         if (arg_i + 1 < args.len) {
             switch (args[arg_i][1]) {
                 'r' => opt.read_from_file = args[arg_i + 1],
+                'w' => opt.write_to_file = args[arg_i + 1],
                 else => {
                     try stderr.print("history: -{c}: invalid option\n", .{args[arg_i][1]});
                     return;
@@ -98,13 +100,11 @@ pub fn history(shell: *Shell, stdout: *Writer, stderr: *Writer, args: []const []
     if (opt.read_from_file) |file_path| {
         const file = shell.cwd.openFile(file_path, .{}) catch return;
         defer file.close();
-        var buffer: [1024]u8 = undefined;
-        var file_r = file.readerStreaming(&buffer);
-        const file_stream = &file_r.interface;
-        while (try file_stream.takeDelimiter('\n')) |line| {
-            if (line.len == 0) continue;
-            try shell.history.append(shell.allocator, try shell.allocator.dupe(u8, line));
-        }
+        try shell.loadHistory(file);
+    } else if (opt.write_to_file) |file_path| {
+        const file = try shell.cwd.createFile(file_path, .{});
+        defer file.close();
+        try shell.storeHistory(file);
     } else {
         const start = history_len - mem.min(usize, &.{ history_len, opt.max_lines orelse history_len });
         for (start..history_len) |i| {

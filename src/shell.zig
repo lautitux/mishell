@@ -259,6 +259,28 @@ pub const Shell = struct {
         }
     }
 
+    pub fn loadHistory(self: *Shell, file: fs.File) !void {
+        var buffer: [1024]u8 = undefined;
+        var file_r = file.readerStreaming(&buffer);
+        const file_stream = &file_r.interface;
+        while (try file_stream.takeDelimiter('\n')) |line| {
+            if (line.len == 0) continue;
+            try self.history.append(self.allocator, try self.allocator.dupe(u8, line));
+        }
+    }
+
+    pub fn storeHistory(self: *Shell, file: fs.File) !void {
+        var buffer: [1024]u8 = undefined;
+        var file_w = file.writerStreaming(&buffer);
+        const file_stream = &file_w.interface;
+        for (self.history.items) |entry| {
+            _ = try file_stream.write(entry);
+            _ = try file_stream.write(&.{'\n'});
+        }
+        try file_stream.flush();
+        try file_stream.writeByte('\n');
+    }
+
     pub fn typeof(self: *const Shell, command: []const u8) !?CommandKind {
         if (builtins_map.get(command)) |builtin| {
             return .{ .Builtin = builtin };

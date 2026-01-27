@@ -3,10 +3,7 @@ const scanner = @import("scanner.zig");
 const Token = scanner.Token;
 const TokenKind = scanner.TokenKind;
 
-pub const Operator = enum {};
-
 pub const Expr = union(enum) {
-    // Binary: struct { lhs: *Expr, op: Operator, rhs: *Expr },
     Pipeline: []const *Expr,
     Redirect: struct {
         command: *Expr,

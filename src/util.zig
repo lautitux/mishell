@@ -1,13 +1,5 @@
 const std = @import("std");
 
-pub fn dupe2(allocator: std.mem.Allocator, comptime T: type, m: []const []const T) ![]const []const T {
-    const new_slice = try allocator.alloc([]T, m.len);
-    for (m, 0..) |elem, i| {
-        new_slice[i] = try allocator.dupe(T, elem);
-    }
-    return new_slice;
-}
-
 // https://www.geeksforgeeks.org/dsa/longest-common-prefix-using-divide-and-conquer-algorithm/
 
 fn commonPrefixUtil(comptime T: type, s1: []const T, s2: []const T) []const T {

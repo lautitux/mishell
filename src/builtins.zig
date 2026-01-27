@@ -92,6 +92,7 @@ pub fn history(shell: *Shell, stdout: *Writer, stderr: *Writer, args: []const []
             return;
         }
     }
+
     if (args.len - arg_i > 1) {
         try stderr.print("history: too many arguments\n", .{});
         return;
@@ -112,7 +113,7 @@ pub fn history(shell: *Shell, stdout: *Writer, stderr: *Writer, args: []const []
         if (opt.append) {
             try file.seekFromEnd(0);
         }
-        try shell.storeHistory(file);
+        try shell.storeHistory(file, .{ .only_new = opt.append });
     } else {
         const start = history_len - mem.min(usize, &.{ history_len, opt.max_lines orelse history_len });
         for (start..history_len) |i| {

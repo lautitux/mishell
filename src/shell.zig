@@ -18,7 +18,8 @@ pub const Shell = struct {
     allocator: std.mem.Allocator,
     arena_allocator: std.heap.ArenaAllocator,
     expr: ?*Expr = null,
-    history: std.ArrayList([]const u8),
+    history: std.ArrayList([]const u8) = .{},
+    last_stored_history: usize = 0,
 
     pub const IoFiles = struct {
         stdin: fs.File,
@@ -58,7 +59,6 @@ pub const Shell = struct {
             .arena_allocator = .init(allocator),
             .env = env,
             .cwd = fs.cwd(),
-            .history = .{},
             .io = .{
                 .stdin = fs.File.stdin(),
                 .stdout = fs.File.stdout(),
@@ -269,16 +269,24 @@ pub const Shell = struct {
         }
     }
 
-    pub fn storeHistory(self: *Shell, file: fs.File) !void {
+    pub fn storeHistory(self: *Shell, file: fs.File, opt: struct { only_new: bool = false }) !void {
         var buffer: [1024]u8 = undefined;
         var file_w = file.writerStreaming(&buffer);
         const file_stream = &file_w.interface;
-        for (self.history.items) |entry| {
+
+        const start = if (opt.only_new) self.last_stored_history else 0;
+        const history_len = self.history.items.len;
+        for (start..history_len) |i| {
+            const entry = self.history.items[i];
             _ = try file_stream.write(entry);
             _ = try file_stream.write(&.{'\n'});
         }
         try file_stream.flush();
         try file_stream.writeByte('\n');
+
+        if (opt.only_new) {
+            self.last_stored_history = history_len;
+        }
     }
 
     pub fn typeof(self: *const Shell, command: []const u8) !?CommandKind {

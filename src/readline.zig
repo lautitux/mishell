@@ -201,10 +201,12 @@ pub const Console = struct {
         var history_replaced_input: ?[]const u8 = null;
         defer if (history_replaced_input) |str| gpa.free(str);
 
+        var double_tab = false;
+
         while (stdin.takeByte()) |char| {
             switch (char) {
                 '\n' => break,
-                '\t' => try self.handleTab(&state),
+                '\t' => double_tab = try self.handleTab(&state, double_tab),
                 ETX => { // ^C
                     try stdout.writeByte('\n');
                     return error.EndOfText;
@@ -248,6 +250,8 @@ pub const Console = struct {
                     try state.appendChar(char);
                 },
             }
+
+            if (char != '\t') double_tab = false;
         } else |err| {
             if (err == error.ReadFailed) return err;
         }
@@ -257,7 +261,7 @@ pub const Console = struct {
         return state.input.toOwnedSlice(gpa);
     }
 
-    fn handleTab(self: *const Console, state: *Prompt) !void {
+    fn handleTab(self: *const Console, state: *Prompt, double_tab: bool) !bool {
         var arena_allocator: std.heap.ArenaAllocator = .init(state.allocator);
         defer arena_allocator.deinit();
         const arena = arena_allocator.allocator();
@@ -271,7 +275,8 @@ pub const Console = struct {
             if (unique or !mem.startsWith(u8, state.text(), prefix)) {
                 try state.setText(prefix);
                 if (unique) try state.appendChar(' ');
-            } else if (true) { // FIXME: should be if double-tab
+                return false;
+            } else if (double_tab) {
                 mem.sort([]const u8, completions, {}, lessThan);
                 try state.stdout.writeByte('\n');
                 for (completions, 0..) |candidate, i| {
@@ -281,8 +286,11 @@ pub const Console = struct {
                     });
                 }
                 try state.show();
+                return false;
             }
         }
+
         try state.stdout.writeByte(BELL);
+        return true;
     }
 };

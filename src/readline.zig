@@ -7,25 +7,112 @@ fn lessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
     return mem.order(u8, lhs, rhs) == .lt;
 }
 
+// https://www.asciitable.com/
+const ETX = 0x03; // End of text
+const EOT = 0x04; // End of transmission
+const BELL = 0x07;
+const BACKSPACE = 0x08;
+const NEW_PAGE = 0x0C;
+const ESC = 0x1B;
+const DEL = 0x7F;
+
+const Prompt = struct {
+    allocator: std.mem.Allocator,
+    input: std.ArrayList(u8) = .{},
+    cursor: struct {
+        line: usize = 0,
+        column: usize = 0,
+    } = .{},
+    prompt: []const u8,
+    stdout: *std.Io.Writer,
+
+    pub const Direction = enum {
+        Left,
+        Right,
+    };
+
+    pub fn deinit(self: *Prompt) void {
+        self.input.deinit(self.allocator);
+    }
+
+    pub fn clearText(self: *Prompt) !void {
+        try self.stdout.writeAll(&.{ '\r', ESC, '[', 'K' });
+        self.input.clearRetainingCapacity();
+        self.cursor.column = 0;
+        try self.show();
+    }
+
+    pub fn setText(self: *Prompt, str: []const u8) !void {
+        try self.clearText();
+        try self.input.appendSlice(self.allocator, str);
+        self.cursor.column = str.len;
+        try self.show();
+    }
+
+    pub fn text(self: *const Prompt) []const u8 {
+        return self.input.items;
+    }
+
+    pub fn appendChar(self: *Prompt, char: u8) !void {
+        try self.input.insert(self.allocator, self.cursor.column, char);
+        self.cursor.column += 1;
+        try self.show();
+    }
+
+    pub fn backspace(self: *Prompt) !void {
+        if (self.cursor.column > 0) {
+            _ = self.input.orderedRemove(self.cursor.column - 1);
+            self.cursor.column -= 1;
+            try self.show();
+        }
+    }
+
+    pub fn clearScreen(self: *Prompt) !void {
+        try self.stdout.writeAll(&.{ ESC, '[', '2', 'J' }); // Clear screen
+        try self.stdout.writeAll(&.{ ESC, '[', 'H' }); // Cursor to home
+        try self.show();
+    }
+
+    fn moveCursorUnchecked(self: *Prompt, direction: Direction, amount: usize) !void {
+        const escape_seq = &.{ ESC, '[' };
+        const fmt_str = "{s}{d}{c}";
+        switch (direction) {
+            .Left => try self.stdout.print(fmt_str, .{ escape_seq, amount, 'D' }),
+            .Right => try self.stdout.print(fmt_str, .{ escape_seq, amount, 'C' }),
+        }
+    }
+
+    pub fn moveCursor(self: *Prompt, direction: Direction, amount: usize) !void {
+        switch (direction) {
+            .Left => if (self.cursor.column >= amount) {
+                try self.moveCursorUnchecked(.Left, amount);
+                self.cursor.column -= amount;
+            },
+            .Right => if (self.cursor.column + amount <= self.input.items.len) {
+                try self.moveCursorUnchecked(.Right, amount);
+                self.cursor.column += amount;
+            },
+        }
+    }
+
+    pub fn show(self: *Prompt) !void {
+        try self.stdout.writeAll(&.{ '\r', ESC, '[', 'K' });
+        try self.stdout.print("{s}{s}\r", .{ self.prompt, self.input.items });
+        try self.moveCursorUnchecked(.Right, self.prompt.len + self.cursor.column);
+    }
+};
+
 pub const Console = struct {
     stdin: fs.File,
     stdout: fs.File,
 
-    history: []const []const u8,
     completion: struct {
         keywords: []const []const u8,
         path: ?[]const u8,
         search_in_cwd: bool = false,
     },
 
-    // https://www.asciitable.com/
-    const ETX = 0x03; // End of text
-    const EOT = 0x04; // End of transmission
-    const BELL = 0x07;
-    const BACKSPACE = 0x08;
-    const NEW_PAGE = 0x0C;
-    const ESC = 0x1B;
-    const DEL = 0x7F;
+    history: []const []const u8,
 
     fn beginRaw(self: *const Console) !void {
         var termios = try std.posix.tcgetattr(self.stdin.handle);
@@ -37,11 +124,6 @@ pub const Console = struct {
         var termios = try std.posix.tcgetattr(self.stdin.handle);
         termios.lflag = .{ .ICANON = true, .ECHO = true };
         try std.posix.tcsetattr(self.stdin.handle, .FLUSH, termios);
-    }
-
-    fn clearLine(stdout: *std.Io.Writer) !void {
-        try stdout.writeByte('\r'); // Goto start of line
-        try stdout.writeAll(&.{ ESC, '[', 'K' }); // Clear line
     }
 
     fn getCompletionsFromDir(completions_set: *std.BufSet, dir: fs.Dir, input: []const u8) !void {
@@ -76,10 +158,9 @@ pub const Console = struct {
             }
         }
 
-        if (self.completion.search_in_cwd) {
-            if (fs.cwd().openDir(".", .{ .iterate = true })) |cwd| {
-                try getCompletionsFromDir(&completions_set, cwd, input);
-            } else |_| {}
+        if (self.completion.search_in_cwd) search_cwd: {
+            const cwd = fs.cwd().openDir(".", .{ .iterate = true }) catch break :search_cwd;
+            try getCompletionsFromDir(&completions_set, cwd, input);
         }
 
         if (completions_set.count() > 0) {
@@ -100,6 +181,7 @@ pub const Console = struct {
 
     pub fn prompt(self: *const Console, gpa: std.mem.Allocator, ppt: []const u8) ![]const u8 {
         try self.beginRaw();
+
         var stdin_buf: [4]u8 = undefined;
         var stdin_r = self.stdin.readerStreaming(&stdin_buf);
         const stdin = &stdin_r.interface;
@@ -107,91 +189,63 @@ pub const Console = struct {
         var stdout_w = self.stdout.writerStreaming(&.{});
         const stdout = &stdout_w.interface;
 
-        try stdout.writeAll(ppt);
+        var state: Prompt = .{
+            .allocator = gpa,
+            .prompt = ppt,
+            .stdout = stdout,
+        };
+        errdefer state.deinit();
+        try state.show();
 
-        var input: std.ArrayList(u8) = .{};
-        errdefer input.deinit(gpa);
-
-        var line_pos: usize = 0;
         var history_index: usize = self.history.len;
-        var double_tab = false;
+        var history_replaced_input: ?[]const u8 = null;
+        defer if (history_replaced_input) |str| gpa.free(str);
 
         while (stdin.takeByte()) |char| {
             switch (char) {
                 '\n' => break,
-                '\t' => {
-                    line_pos =
-                        try self.handleTab(
-                            gpa,
-                            &double_tab,
-                            stdout,
-                            ppt,
-                            &input,
-                        );
-                },
-                ETX => {
-                    // ^C
+                '\t' => try self.handleTab(&state),
+                ETX => { // ^C
                     try stdout.writeByte('\n');
                     return error.EndOfText;
                 },
-                EOT => {
-                    // ^D
-                    return error.EndOfTransmission;
-                },
-                NEW_PAGE => {
-                    // ^L
-                    try stdout.writeAll(&.{ ESC, '[', '2', 'J' }); // Clear screen
-                    try stdout.writeAll(&.{ ESC, '[', 'H' }); // Cursor to home
-                    try stdout.writeAll(ppt);
-                    try stdout.writeAll(input.items);
-                },
+                EOT => return error.EndOfTransmission, // ^D
+                NEW_PAGE => try state.clearScreen(), // ^L
                 ESC => {
-                    // TODO: Support escape codes
                     var next_char = try stdin.takeByte();
                     std.debug.assert(next_char == '[');
                     next_char = try stdin.takeByte();
+                    std.debug.assert(!std.ascii.isDigit(next_char));
                     switch (next_char) {
-                        'A' => {
-                            if (history_index > 0) {
-                                history_index -= 1;
-                                const command = self.history[history_index];
-                                try clearLine(stdout);
-                                try stdout.print("{s}{s}", .{ ppt, command });
-                                input.clearRetainingCapacity();
-                                try input.appendSlice(gpa, command);
-                                line_pos = command.len;
+                        'A' => if (history_index > 0) {
+                            history_index -= 1;
+                            if (history_replaced_input == null)
+                                history_replaced_input = try gpa.dupe(u8, state.input.items);
+                            try state.setText(self.history[history_index]);
+                        },
+                        'B' => if (history_index < self.history.len) {
+                            history_index += 1;
+                            if (history_index == self.history.len) {
+                                const line = history_replaced_input orelse "";
+                                try state.setText(line);
+                                gpa.free(line);
+                                history_replaced_input = null;
+                            } else {
+                                try state.setText(self.history[history_index]);
                             }
                         },
-                        'B' => {
-                            if (history_index < self.history.len - 1) {
-                                history_index += 1;
-                                const command = self.history[history_index];
-                                try clearLine(stdout);
-                                try stdout.print("{s}{s}", .{ ppt, command });
-                                input.clearRetainingCapacity();
-                                try input.appendSlice(gpa, command);
-                                line_pos = command.len;
-                            }
-                        },
+                        'C' => try state.moveCursor(.Right, 1),
+                        'D' => try state.moveCursor(.Left, 1),
                         else => continue,
                     }
                 },
-                DEL => {
-                    // Backspace
-                    if (line_pos > 0) {
-                        _ = input.pop();
-                        try stdout.writeAll(&.{ BACKSPACE, ' ', BACKSPACE });
-                        line_pos -= 1;
-                    }
-                },
+                DEL => try state.backspace(),
                 else => {
                     switch (char) {
-                        0...31 => continue,
+                        0...31 => continue, // Non printable characters
                         else => {},
                     }
-                    try input.append(gpa, char);
-                    try stdout.writeByte(char);
-                    line_pos += 1;
+                    try state.appendChar(char);
                 },
             }
         } else |err| {
@@ -200,66 +254,35 @@ pub const Console = struct {
         try stdout.writeByte('\n');
 
         try self.endRaw();
-        return input.toOwnedSlice(gpa);
+        return state.input.toOwnedSlice(gpa);
     }
 
-    fn handleTab(
-        self: *const Console,
-        gpa: std.mem.Allocator,
-        double_tab: *bool,
-        stdout: *std.Io.Writer,
-        ppt: []const u8,
-        input: *std.ArrayList(u8),
-    ) !usize {
-        var arena_allocator: std.heap.ArenaAllocator = .init(gpa);
+    fn handleTab(self: *const Console, state: *Prompt) !void {
+        var arena_allocator: std.heap.ArenaAllocator = .init(state.allocator);
         defer arena_allocator.deinit();
         const arena = arena_allocator.allocator();
 
-        if (try self.getCompletions(input.items, arena)) |completions| {
+        if (try self.getCompletions(state.text(), arena)) |completions| {
             // SAFETY: completions is not empty, and at least all
             //         possible completions start with 'input'
             const prefix = util.longestCommonPrefix(u8, completions).?;
             const unique = completions.len == 1;
-            if (unique or !mem.startsWith(u8, input.items, prefix)) {
-                try clearLine(stdout);
-                try stdout.print(
-                    "\r{s}{s}{s}",
-                    .{
-                        ppt,
-                        prefix,
-                        if (unique) " " else "",
-                    },
-                );
 
-                input.clearRetainingCapacity();
-                try input.appendSlice(gpa, prefix);
-                if (unique) try input.append(gpa, ' ');
-
-                double_tab.* = false;
-                return prefix.len + @as(usize, if (unique) 1 else 0);
-            } else if (double_tab.*) {
+            if (unique or !mem.startsWith(u8, state.text(), prefix)) {
+                try state.setText(prefix);
+                if (unique) try state.appendChar(' ');
+            } else if (true) { // FIXME: should be if double-tab
                 mem.sort([]const u8, completions, {}, lessThan);
-                try stdout.writeByte('\n');
-
+                try state.stdout.writeByte('\n');
                 for (completions, 0..) |candidate, i| {
-                    try stdout.print(
-                        "{s}{s}",
-                        .{
-                            candidate,
-                            if (i < completions.len - 1) "  " else "\n",
-                        },
-                    );
+                    try state.stdout.print("{s}{s}", .{
+                        candidate,
+                        if (i < completions.len - 1) "  " else "\n",
+                    });
                 }
-
-                try stdout.print("{s}{s}", .{ ppt, input.items });
-
-                double_tab.* = false;
-                return input.items.len;
+                try state.show();
             }
         }
-
-        try stdout.writeByte(BELL);
-        double_tab.* = true;
-        return input.items.len;
+        try state.stdout.writeByte(BELL);
     }
 };

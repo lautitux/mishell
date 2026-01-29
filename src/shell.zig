@@ -139,15 +139,9 @@ pub const Shell = struct {
                         .Executable => |dir_path| try self.runExe(cmd.name, dir_path, cmd.arguments, io),
                     }
                     // Cleanup
-                    if (io.stdin.handle != self.io.stdin.handle) {
-                        io.stdin.close();
-                    }
-                    if (io.stdout.handle != self.io.stdout.handle) {
-                        io.stdout.close();
-                    }
-                    if (io.stderr.handle != self.io.stderr.handle) {
-                        io.stderr.close();
-                    }
+                    if (io.stdin.handle != self.io.stdin.handle) io.stdin.close();
+                    if (io.stdout.handle != self.io.stdout.handle) io.stdout.close();
+                    if (io.stderr.handle != self.io.stderr.handle) io.stderr.close();
                 } else {
                     try stderr.print("{s}: command not found\n", .{cmd.name});
                 }

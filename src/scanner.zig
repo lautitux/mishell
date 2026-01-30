@@ -122,10 +122,12 @@ pub const Scanner = struct {
                         break;
                     },
                     '>', '|' => break,
-                    else => try char_list.append(self.allocator, char),
+                    else => {
+                        _ = self.advance();
+                        try char_list.append(self.allocator, char);
+                    },
                 }
             }
-            _ = self.advance();
         }
         if (char_list.items.len == 0) {
             char_list.deinit(self.allocator);
@@ -136,6 +138,7 @@ pub const Scanner = struct {
     }
 
     fn scanSingleQuotedString(self: *Scanner, char_list: *std.ArrayList(u8)) Allocator.Error!void {
+        _ = self.advance(); // Consume '
         while (self.advance()) |char| {
             if (char == '\'') break;
             try char_list.append(self.allocator, char);
@@ -143,6 +146,7 @@ pub const Scanner = struct {
     }
 
     fn scanDoubleQuotedString(self: *Scanner, char_list: *std.ArrayList(u8)) Allocator.Error!void {
+        _ = self.advance(); // Consume "
         var escape = false;
         while (self.advance()) |char| {
             if (escape) {

@@ -1,6 +1,8 @@
 const std = @import("std");
 const ascii = std.ascii;
 
+const Allocator = std.mem.Allocator;
+
 pub const TokenKind = enum {
     Pipe,
     Redirect,
@@ -20,9 +22,9 @@ pub const Scanner = struct {
     source: []const u8,
     current: usize = 0,
     tokens: std.ArrayList(Token) = .{},
-    allocator: std.mem.Allocator,
+    allocator: Allocator,
 
-    pub fn init(allocator: std.mem.Allocator, source: []const u8) Scanner {
+    pub fn init(allocator: Allocator, source: []const u8) Scanner {
         return .{
             .allocator = allocator,
             .source = source,
@@ -59,7 +61,7 @@ pub const Scanner = struct {
         return null;
     }
 
-    pub fn scan(self: *Scanner) ![]const Token {
+    pub fn scan(self: *Scanner) Allocator.Error![]const Token {
         while (!self.isAtEnd()) {
             if (try self.scanToken()) |token| {
                 try self.tokens.append(self.allocator, token);
@@ -68,7 +70,7 @@ pub const Scanner = struct {
         return self.tokens.items;
     }
 
-    pub fn scanToken(self: *Scanner) !?Token {
+    pub fn scanToken(self: *Scanner) Allocator.Error!?Token {
         while (self.peek()) |char| {
             switch (char) {
                 ' ', '\r', '\t', '\n' => _ = self.advance(), // Skip whitespaces
@@ -88,15 +90,12 @@ pub const Scanner = struct {
                         const append = self.peek() == '>';
                         if (append) _ = self.advance();
 
-                        return if (number < 0 or number > 2)
-                            error.UnsupportedFileDescriptor
-                        else
-                            .{
-                                .Redirect = .{
-                                    .file_descriptor = number,
-                                    .append = append,
-                                },
-                            };
+                        return .{
+                            .Redirect = .{
+                                .file_descriptor = number,
+                                .append = append,
+                            },
+                        };
                     } else {
                         return try self.scanString();
                     }
@@ -106,10 +105,10 @@ pub const Scanner = struct {
         return null;
     }
 
-    pub fn scanString(self: *Scanner) !?Token {
+    pub fn scanString(self: *Scanner) Allocator.Error!?Token {
         var char_list: std.ArrayList(u8) = .{};
         var escape_next = false;
-        while (self.advance()) |char| {
+        while (self.peek()) |char| {
             if (escape_next) {
                 try char_list.append(self.allocator, char);
                 escape_next = false;
@@ -118,10 +117,15 @@ pub const Scanner = struct {
                     '\'' => try self.scanSingleQuotedString(&char_list),
                     '"' => try self.scanDoubleQuotedString(&char_list),
                     '\\' => escape_next = true,
-                    ' ', '\r', '\t', '\n', '>', '|' => break,
+                    ' ', '\r', '\t', '\n' => {
+                        _ = self.advance();
+                        break;
+                    },
+                    '>', '|' => break,
                     else => try char_list.append(self.allocator, char),
                 }
             }
+            _ = self.advance();
         }
         if (char_list.items.len == 0) {
             char_list.deinit(self.allocator);
@@ -131,14 +135,14 @@ pub const Scanner = struct {
         }
     }
 
-    fn scanSingleQuotedString(self: *Scanner, char_list: *std.ArrayList(u8)) !void {
+    fn scanSingleQuotedString(self: *Scanner, char_list: *std.ArrayList(u8)) Allocator.Error!void {
         while (self.advance()) |char| {
             if (char == '\'') break;
             try char_list.append(self.allocator, char);
         }
     }
 
-    fn scanDoubleQuotedString(self: *Scanner, char_list: *std.ArrayList(u8)) !void {
+    fn scanDoubleQuotedString(self: *Scanner, char_list: *std.ArrayList(u8)) Allocator.Error!void {
         var escape = false;
         while (self.advance()) |char| {
             if (escape) {

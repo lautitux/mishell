@@ -180,9 +180,6 @@ pub const Console = struct {
     }
 
     pub fn prompt(self: *const Console, gpa: std.mem.Allocator, ppt: []const u8) ![]const u8 {
-        try self.beginRaw();
-        defer self.endRaw() catch {};
-
         var stdin_buf: [4]u8 = undefined;
         var stdin_r = self.stdin.readerStreaming(&stdin_buf);
         const stdin = &stdin_r.interface;
@@ -196,13 +193,18 @@ pub const Console = struct {
             .stdout = stdout,
         };
         errdefer state.deinit();
-        try state.show();
 
         var history_index: usize = self.history.len;
         var history_replaced_input: ?[]const u8 = null;
         defer if (history_replaced_input) |str| gpa.free(str);
 
         var double_tab = false;
+
+        try self.beginRaw();
+        defer self.endRaw() catch |err| {
+            std.log.err("{any}\nreadline: failed to restore terminal to normal mode", .{err});
+        };
+        try state.show();
 
         while (stdin.takeByte()) |char| {
             switch (char) {
@@ -259,8 +261,8 @@ pub const Console = struct {
         } else |err| {
             if (err == error.ReadFailed) return err;
         }
-        try stdout.writeByte('\n');
 
+        try stdout.writeByte('\n');
         return state.input.toOwnedSlice(gpa);
     }
 

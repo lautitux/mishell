@@ -299,7 +299,7 @@ pub const Shell = struct {
         if (self.env.get("PATH")) |path| {
             var iter = std.mem.splitScalar(u8, path, ':');
             while (iter.next()) |dir_path| {
-                var dir = try fs.openDirAbsolute(dir_path, .{});
+                var dir = fs.openDirAbsolute(dir_path, .{}) catch continue;
                 defer dir.close();
                 const is_exec = util.isExecutable(dir, name) catch continue;
                 if (is_exec) return dir_path;

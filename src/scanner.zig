@@ -110,13 +110,17 @@ pub const Scanner = struct {
         var escape_next = false;
         while (self.peek()) |char| {
             if (escape_next) {
+                _ = self.advance();
                 try char_list.append(self.allocator, char);
                 escape_next = false;
             } else {
                 switch (char) {
                     '\'' => try self.scanSingleQuotedString(&char_list),
                     '"' => try self.scanDoubleQuotedString(&char_list),
-                    '\\' => escape_next = true,
+                    '\\' => {
+                        _ = self.advance();
+                        escape_next = true;
+                    },
                     ' ', '\r', '\t', '\n' => {
                         _ = self.advance();
                         break;

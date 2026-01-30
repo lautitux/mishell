@@ -181,6 +181,7 @@ pub const Console = struct {
 
     pub fn prompt(self: *const Console, gpa: std.mem.Allocator, ppt: []const u8) ![]const u8 {
         try self.beginRaw();
+        defer self.endRaw() catch {};
 
         var stdin_buf: [4]u8 = undefined;
         var stdin_r = self.stdin.readerStreaming(&stdin_buf);
@@ -211,7 +212,10 @@ pub const Console = struct {
                     try stdout.writeByte('\n');
                     return error.EndOfText;
                 },
-                EOT => return error.EndOfTransmission, // ^D
+                EOT => { // ^D
+                    try stdout.writeByte('\n'); // advance to a new line before exiting
+                    return error.EndOfTransmission;
+                },
                 NEW_PAGE => try state.clearScreen(), // ^L
                 ESC => {
                     var next_char = try stdin.takeByte();
@@ -257,7 +261,6 @@ pub const Console = struct {
         }
         try stdout.writeByte('\n');
 
-        try self.endRaw();
         return state.input.toOwnedSlice(gpa);
     }
 

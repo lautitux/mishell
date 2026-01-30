@@ -22,8 +22,8 @@ pub fn main() !void {
     }
 
     while (!shell.should_exit) {
-        try shell.prompt();
-        try shell.run();
+        if (try shell.prompt())
+            try shell.run();
     }
 
     if (env.get("HISTFILE")) |history_file_path| history: {

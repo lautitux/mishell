@@ -21,6 +21,12 @@ pub const Parser = struct {
     tokens: []const Token,
     current: usize = 0,
 
+    pub const Error = error{
+        OutOfMemory,
+        ExpectedCommand,
+        ExpectedString,
+    };
+
     fn isAtEnd(self: *const Parser) bool {
         return self.current >= self.tokens.len;
     }
@@ -39,7 +45,7 @@ pub const Parser = struct {
         return false;
     }
 
-    fn consume(self: *Parser, kind: TokenKind) !Token {
+    fn consume(self: *Parser, kind: TokenKind) error{ExpectedOtherTokenKind}!Token {
         if (self.check(kind)) {
             return self.advance().?;
         }
@@ -54,7 +60,7 @@ pub const Parser = struct {
         return null;
     }
 
-    pub fn parse(self: *Parser, arena: *std.heap.ArenaAllocator) !?*Expr {
+    pub fn parse(self: *Parser, arena: *std.heap.ArenaAllocator) Error!?*Expr {
         if (!self.isAtEnd()) {
             const allocator = arena.allocator();
             return try self.pipeline(allocator);
@@ -62,7 +68,7 @@ pub const Parser = struct {
         return null;
     }
 
-    fn pipeline(self: *Parser, allocator: std.mem.Allocator) !*Expr {
+    fn pipeline(self: *Parser, allocator: std.mem.Allocator) Error!*Expr {
         const lhs = try self.redirect(allocator);
         if (self.check(.Pipe)) {
             var pipeline_list: std.ArrayList(*Expr) = .{};
@@ -83,7 +89,7 @@ pub const Parser = struct {
         return lhs;
     }
 
-    fn redirect(self: *Parser, allocator: std.mem.Allocator) !*Expr {
+    fn redirect(self: *Parser, allocator: std.mem.Allocator) Error!*Expr {
         const lhs = try self.command(allocator);
         if (self.check(.Redirect)) {
             const token = self.advance().?;
@@ -104,9 +110,9 @@ pub const Parser = struct {
         return lhs;
     }
 
-    fn command(self: *Parser, allocator: std.mem.Allocator) !*Expr {
+    fn command(self: *Parser, allocator: std.mem.Allocator) Error!*Expr {
         const name_token =
-            self.consume(.String) catch return error.ExpectedString;
+            self.consume(.String) catch return error.ExpectedCommand;
         const name = try allocator.dupe(u8, name_token.String);
 
         var arguments_list: std.ArrayList([]const u8) = .{};

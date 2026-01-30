@@ -75,7 +75,8 @@ pub const Shell = struct {
         self.history.deinit(self.allocator);
     }
 
-    pub fn prompt(self: *Shell) !void {
+    // Returns true if succesful, that means that shell.run may be called
+    pub fn prompt(self: *Shell) !bool {
         _ = self.arena_allocator.reset(.retain_capacity);
         self.expr = null;
 
@@ -96,10 +97,10 @@ pub const Shell = struct {
 
         const input = console.prompt(self.allocator, "$ ") catch |err| {
             switch (err) {
-                error.EndOfText => return,
+                error.EndOfText => return false,
                 error.EndOfTransmission => {
                     self.should_exit = true;
-                    return;
+                    return false;
                 },
                 else => return err,
             }
@@ -111,19 +112,36 @@ pub const Shell = struct {
             try self.allocator.dupe(u8, input),
         );
 
+        var stderr_w = self.io.stderr.writerStreaming(&.{});
+        const stderr = &stderr_w.interface;
+
         var scanner: Scanner = .init(scanner_allocator, input);
-        const tokens = try scanner.scan();
+        const tokens = scanner.scan() catch {
+            try stderr.print("scanner: out of memory\n", .{});
+            return false;
+        };
+
         if (tokens.len > 0) {
             var parser: Parser = .{ .tokens = tokens };
-            self.expr = try parser.parse(&self.arena_allocator);
-        } else {
-            self.expr = null;
+            self.expr = parser.parse(&self.arena_allocator) catch |err| {
+                try stderr.print("parser: {s}\n", .{@errorName(err)});
+                return false;
+            };
+            return true;
         }
+
+        self.expr = null;
+        return false;
     }
 
     pub fn run(self: *Shell) !void {
+        var stderr_w = self.io.stderr.writerStreaming(&.{});
+        const stderr = &stderr_w.interface;
+
         if (self.expr) |expr| {
-            try self.evalExpr(self.allocator, expr, null);
+            self.evalExpr(self.allocator, expr, null) catch |err| {
+                try stderr.print("error: {s}\n", .{@errorName(err)});
+            };
         }
     }
 

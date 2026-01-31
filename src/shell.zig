@@ -28,6 +28,23 @@ pub const Shell = struct {
         stderr: fs.File,
     };
 
+    pub const StdFd = enum(u8) {
+        Stdin = 0,
+        Stdout = 1,
+        Stderr = 2,
+    };
+
+    fn closeIfUnused(self: *Shell, io: IoFiles, fd: StdFd) void {
+        switch (fd) {
+            .Stdin => if (self.io.stdin.handle != io.stdin.handle)
+                io.stdin.close(),
+            .Stdout => if (self.io.stdout.handle != io.stdout.handle)
+                io.stdout.close(),
+            .Stderr => if (self.io.stderr.handle != io.stderr.handle)
+                io.stderr.close(),
+        }
+    }
+
     const BuiltinCommand = enum {
         Exit,
         Echo,
@@ -158,9 +175,9 @@ pub const Shell = struct {
                         .Executable => |dir_path| try self.runExe(cmd.name, dir_path, cmd.arguments, io),
                     }
                     // Cleanup
-                    if (io.stdin.handle != self.io.stdin.handle) io.stdin.close();
-                    if (io.stdout.handle != self.io.stdout.handle) io.stdout.close();
-                    if (io.stderr.handle != self.io.stderr.handle) io.stderr.close();
+                    self.closeIfUnused(io, .Stdin);
+                    self.closeIfUnused(io, .Stdout);
+                    self.closeIfUnused(io, .Stderr);
                 } else {
                     try stderr.print("{s}: command not found\n", .{cmd.name});
                 }
@@ -173,20 +190,17 @@ pub const Shell = struct {
                 if (redirect.append)
                     try file.seekFromEnd(0);
                 var new_io = io;
-                const shell_f: fs.File, const new_io_f: *fs.File =
-                    if (redirect.file_descriptor == 0)
-                        .{ self.io.stdin, &new_io.stdin }
-                    else if (redirect.file_descriptor == 1)
-                        .{ self.io.stdout, &new_io.stdout }
-                    else if (redirect.file_descriptor == 2)
-                        .{ self.io.stderr, &new_io.stderr }
-                    else
-                        return error.UnsupportedRedirect;
-                if (shell_f.handle == new_io_f.handle) {
-                    new_io_f.* = file;
+                if (redirect.file_descriptor == 0) {
+                    new_io.stdin = file;
+                    self.closeIfUnused(io, .Stdin);
+                } else if (redirect.file_descriptor == 1) {
+                    new_io.stdout = file;
+                    self.closeIfUnused(io, .Stdout);
+                } else if (redirect.file_descriptor == 2) {
+                    new_io.stderr = file;
+                    self.closeIfUnused(io, .Stderr);
                 } else {
-                    new_io_f.close();
-                    new_io_f.* = file;
+                    return error.UnsupportedRedirect;
                 }
                 try self.evalExpr(gpa, redirect.command, new_io);
             },

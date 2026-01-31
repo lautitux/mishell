@@ -32,3 +32,7 @@ pub fn main() !void {
         try shell.storeHistory(file, .{});
     }
 }
+
+test {
+    _ = @import("scanner.zig");
+}

@@ -174,3 +174,199 @@ pub const Scanner = struct {
         }
     }
 };
+
+// Tests
+
+const testing = std.testing;
+
+fn printToken(tk: Token) void {
+    switch (tk) {
+        .Pipe => std.debug.print("|", .{}),
+        .String => |str| std.debug.print("{s}", .{str}),
+        .Redirect => |red| std.debug.print("{d}>{s}", .{
+            red.file_descriptor,
+            if (red.append) ">" else "",
+        }),
+    }
+}
+
+fn printTokenSlice(tks: []const Token) void {
+    for (tks, 0..) |tk, i| {
+        printToken(tk);
+        if (i + 1 < tks.len)
+            std.debug.print(" ", .{});
+    }
+}
+
+fn expectEqualTokenSlice(expect: []const Token, actual: []const Token) !void {
+    errdefer {
+        std.debug.print("Expected: ", .{});
+        printTokenSlice(expect);
+        std.debug.print("\n", .{});
+        std.debug.print("Found: ", .{});
+        printTokenSlice(actual);
+        std.debug.print("\n", .{});
+    }
+    try testing.expectEqual(expect.len, actual.len);
+    for (expect, 0..) |tk_e, i| {
+        const tk_a = actual[i];
+        try testing.expectEqualStrings(
+            @tagName(std.meta.activeTag(tk_e)),
+            @tagName(std.meta.activeTag(tk_a)),
+        );
+        switch (tk_e) {
+            .Pipe => {},
+            .String => |str_e| try testing.expectEqualStrings(str_e, tk_a.String),
+            .Redirect => |red_e| {
+                try testing.expectEqual(red_e.file_descriptor, tk_a.Redirect.file_descriptor);
+                try testing.expectEqual(red_e.append, tk_a.Redirect.append);
+            },
+        }
+    }
+}
+
+const TestCase = struct {
+    input: []const u8,
+    expect: []const Token,
+};
+
+test "memory management" {
+    var scanner: Scanner = .init(testing.allocator, "echo 'hello world' banana \"mango\"\\ pineapple");
+    defer scanner.deinit();
+    _ = try scanner.scan();
+}
+
+test "basic tokenization" {
+    const cases: []const TestCase = &.{
+        .{
+            .input = "echo banana mango pineapple",
+            .expect = &.{
+                .{ .String = "echo" },
+                .{ .String = "banana" },
+                .{ .String = "mango" },
+                .{ .String = "pineapple" },
+            },
+        },
+        .{
+            .input = "type -l -2 123 hello",
+            .expect = &.{
+                .{ .String = "type" },
+                .{ .String = "-l" },
+                .{ .String = "-2" },
+                .{ .String = "123" },
+                .{ .String = "hello" },
+            },
+        },
+    };
+
+    for (cases) |case| {
+        var scanner = Scanner.init(testing.allocator, case.input);
+        defer scanner.deinit();
+        const tokens = try scanner.scan();
+        try expectEqualTokenSlice(case.expect, tokens);
+    }
+}
+
+test "operators and redirections" {
+    const cases: []const TestCase = &.{
+        .{
+            .input = "ls | grep .zig > out.txt",
+            .expect = &.{
+                .{ .String = "ls" },
+                .{ .Pipe = {} },
+                .{ .String = "grep" },
+                .{ .String = ".zig" },
+                .{ .Redirect = .{ .file_descriptor = 1, .append = false } },
+                .{ .String = "out.txt" },
+            },
+        },
+        .{
+            .input = "run 2>> error.log 1>info.log",
+            .expect = &.{
+                .{ .String = "run" },
+                .{ .Redirect = .{ .file_descriptor = 2, .append = true } },
+                .{ .String = "error.log" },
+                .{ .Redirect = .{ .file_descriptor = 1, .append = false } },
+                .{ .String = "info.log" },
+            },
+        },
+    };
+
+    for (cases) |case| {
+        var scanner = Scanner.init(testing.allocator, case.input);
+        defer scanner.deinit();
+        const tokens = try scanner.scan();
+        try expectEqualTokenSlice(case.expect, tokens);
+    }
+}
+
+test "quoting and escaping" {
+    const cases: []const TestCase = &.{
+        .{
+            .input = "echo 'hello > | >>'",
+            .expect = &.{
+                .{ .String = "echo" },
+                .{ .String = "hello > | >>" },
+            },
+        },
+        .{
+            .input = "echo \"He said \\\"hi\\\"\"",
+            .expect = &.{
+                .{ .String = "echo" },
+                .{ .String = "He said \"hi\"" },
+            },
+        },
+        .{
+            .input = "ls \\| file\\ name",
+            .expect = &.{
+                .{ .String = "ls" },
+                .{ .String = "|" },
+                .{ .String = "file name" },
+            },
+        },
+    };
+
+    for (cases) |case| {
+        var scanner = Scanner.init(testing.allocator, case.input);
+        defer scanner.deinit();
+        const tokens = try scanner.scan();
+        try expectEqualTokenSlice(case.expect, tokens);
+    }
+}
+
+test "scanner edge cases" {
+    const cases: []const TestCase = &.{
+        .{
+            .input = "",
+            .expect = &.{},
+        },
+        .{
+            .input = "cat2>file|grep'single'2>>out",
+            .expect = &.{
+                .{ .String = "cat2" },
+                .{ .Redirect = .{ .file_descriptor = 1, .append = false } },
+                .{ .String = "file" },
+                .{ .Pipe = {} },
+                .{ .String = "grepsingle2" },
+                .{ .Redirect = .{ .file_descriptor = 1, .append = true } },
+                .{ .String = "out" },
+            },
+        },
+        .{
+            .input = "echo \\\\ \"\\\\\" \\ \\ ",
+            .expect = &.{
+                .{ .String = "echo" },
+                .{ .String = "\\" },
+                .{ .String = "\\" },
+                .{ .String = "  " },
+            },
+        },
+    };
+
+    for (cases) |case| {
+        var scanner = Scanner.init(testing.allocator, case.input);
+        defer scanner.deinit();
+        const tokens = try scanner.scan();
+        try expectEqualTokenSlice(case.expect, tokens);
+    }
+}

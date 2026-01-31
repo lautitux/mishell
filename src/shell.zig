@@ -5,6 +5,7 @@ const util = @import("util.zig");
 const builtins = @import("builtins.zig");
 const parser_mod = @import("parser.zig");
 const Scanner = @import("scanner.zig").Scanner;
+const Subprocess = @import("subprocess.zig").Subprocess;
 const Console = @import("readline.zig").Console;
 const Thread = std.Thread;
 const Parser = parser_mod.Parser;
@@ -153,7 +154,7 @@ pub const Shell = struct {
             .Command => |cmd| {
                 if (try self.typeof(cmd.name)) |cmd_kind| {
                     switch (cmd_kind) {
-                        .Builtin => |builtin| try self.runBuiltin(builtin, cmd.arguments, io),
+                        .Builtin => |builtin| try self.runBuiltin(builtin, cmd.arguments[1..], io),
                         .Executable => |dir_path| try self.runExe(cmd.name, dir_path, cmd.arguments, io),
                     }
                     // Cleanup
@@ -225,28 +226,21 @@ pub const Shell = struct {
         arguments: []const []const u8,
         io: IoFiles,
     ) !void {
-        var arena_allocator: std.heap.ArenaAllocator = .init(self.allocator);
-        defer arena_allocator.deinit();
-        const arena = arena_allocator.allocator();
-        const path = try fs.path.joinZ(arena, &.{ dir_path, exe_name });
-        const argv = try arena.allocSentinel(?[*:0]const u8, arguments.len + 1, null);
-        argv[0] = try arena.dupeZ(u8, exe_name);
-        for (1..argv.len) |i|
-            argv[i] = try arena.dupeZ(u8, arguments[i - 1]);
-        const environ = try std.process.createEnvironFromMap(arena, &self.env, .{});
-        const pid = try std.posix.fork();
-        if (pid == 0) {
-            try std.posix.dup2(io.stdin.handle, std.posix.STDIN_FILENO);
-            try std.posix.dup2(io.stdout.handle, std.posix.STDOUT_FILENO);
-            try std.posix.dup2(io.stderr.handle, std.posix.STDERR_FILENO);
-            const err = std.posix.execveZ(path, argv, environ);
-            switch (err) {
-                else => {}, // Ignore error
-            }
-            std.process.exit(0);
-        } else {
-            _ = std.posix.waitpid(pid, 0);
-        }
+        var dir = try fs.openDirAbsolute(dir_path, .{});
+        defer dir.close();
+        const exe_absolute_path = try dir.realpathAlloc(self.allocator, exe_name);
+        defer self.allocator.free(exe_absolute_path);
+        var subprocess: Subprocess = .{
+            .allocator = self.allocator,
+            .exe_absolute_path = exe_absolute_path,
+            .argv = arguments,
+            .env_map = &self.env,
+            .stdin = io.stdin,
+            .stdout = io.stdout,
+            .stderr = io.stderr,
+        };
+        try subprocess.spawn();
+        _ = try subprocess.wait();
     }
 
     fn runBuiltin(

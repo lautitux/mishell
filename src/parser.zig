@@ -116,6 +116,8 @@ pub const Parser = struct {
         const name = try allocator.dupe(u8, name_token.String);
 
         var arguments_list: std.ArrayList([]const u8) = .{};
+        // Include itself as first argument
+        try arguments_list.append(allocator, name);
         while (self.check(.String)) {
             const token = self.advance().?;
             const arg = try allocator.dupe(u8, token.String);

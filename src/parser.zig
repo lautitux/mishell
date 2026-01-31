@@ -82,7 +82,7 @@ pub const Parser = struct {
             }
             const expr = try allocator.create(Expr);
             expr.* = .{
-                .Pipeline = pipeline_list.items,
+                .Pipeline = try pipeline_list.toOwnedSlice(allocator),
             };
             return expr;
         }
@@ -126,7 +126,7 @@ pub const Parser = struct {
         expr.* = .{
             .Command = .{
                 .name = name,
-                .arguments = arguments_list.items,
+                .arguments = try arguments_list.toOwnedSlice(allocator),
             },
         };
         return expr;

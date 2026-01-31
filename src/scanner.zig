@@ -15,7 +15,7 @@ pub const Token = union(TokenKind) {
         file_descriptor: u8,
         append: bool,
     },
-    String: []u8,
+    String: []const u8,
 };
 
 pub const Scanner = struct {
@@ -32,8 +32,9 @@ pub const Scanner = struct {
     }
 
     pub fn deinit(self: *Scanner) void {
-        for (self.tokens) |token| {
-            self.allocator.free(token);
+        for (self.tokens.items) |token| {
+            if (token == .String)
+                self.allocator.free(token.String);
         }
         self.tokens.deinit(self.allocator);
     }
@@ -70,7 +71,7 @@ pub const Scanner = struct {
         return self.tokens.items;
     }
 
-    pub fn scanToken(self: *Scanner) Allocator.Error!?Token {
+    fn scanToken(self: *Scanner) Allocator.Error!?Token {
         while (self.peek()) |char| {
             switch (char) {
                 ' ', '\r', '\t', '\n' => _ = self.advance(), // Skip whitespaces
@@ -105,7 +106,7 @@ pub const Scanner = struct {
         return null;
     }
 
-    pub fn scanString(self: *Scanner) Allocator.Error!?Token {
+    fn scanString(self: *Scanner) Allocator.Error!?Token {
         var char_list: std.ArrayList(u8) = .{};
         var escape_next = false;
         while (self.peek()) |char| {
@@ -137,7 +138,7 @@ pub const Scanner = struct {
             char_list.deinit(self.allocator);
             return null;
         } else {
-            return .{ .String = char_list.items };
+            return .{ .String = try char_list.toOwnedSlice(self.allocator) };
         }
     }
 
